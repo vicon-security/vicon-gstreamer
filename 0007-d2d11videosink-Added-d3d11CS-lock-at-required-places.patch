@@ -1,0 +1,39 @@
+From a129a2df1332dfaa24335cf4d5c9f81e96568d03 Mon Sep 17 00:00:00 2001
+From: smomin7 <smomin@vicon-security.com>
+Date: Wed, 2 Apr 2025 20:13:24 +0530
+Subject: [PATCH 07/18] d2d11videosink: Added d3d11CS lock at required places.
+
+---
+ subprojects/gst-plugins-bad/sys/d3d11/gstd3d11videosink.cpp | 4 ++++
+ 1 file changed, 4 insertions(+)
+
+diff --git a/subprojects/gst-plugins-bad/sys/d3d11/gstd3d11videosink.cpp b/subprojects/gst-plugins-bad/sys/d3d11/gstd3d11videosink.cpp
+index 57aa33a328..58b553f56e 100644
+--- a/subprojects/gst-plugins-bad/sys/d3d11/gstd3d11videosink.cpp
++++ b/subprojects/gst-plugins-bad/sys/d3d11/gstd3d11videosink.cpp
+@@ -1393,6 +1393,7 @@ gst_d3d11_video_sink_propose_allocation (GstBaseSink * sink, GstQuery * query)
+   guint size;
+   gboolean need_pool;
+ 
++  GstD3D11CSLockGuard lk (&self->lock);
+   if (!self->device)
+     return FALSE;
+ 
+@@ -1503,11 +1504,14 @@ gst_d3d11_video_sink_query (GstBaseSink * sink, GstQuery * query)
+ 
+   switch (GST_QUERY_TYPE (query)) {
+     case GST_QUERY_CONTEXT:
++    {
++      GstD3D11CSLockGuard lk (&self->lock);
+       if (gst_d3d11_handle_context_query (GST_ELEMENT (self), query,
+               self->device)) {
+         return TRUE;
+       }
+       break;
++    }
+     default:
+       break;
+   }
+-- 
+2.40.1.windows.1
+

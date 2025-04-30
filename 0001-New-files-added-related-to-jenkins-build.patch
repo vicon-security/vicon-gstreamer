@@ -1,0 +1,57 @@
+From e54d2ac0dbe94bc71ea94408b4f82dbe5fac544f Mon Sep 17 00:00:00 2001
+From: smomin7 <smomin@vicon-security.com>
+Date: Thu, 27 Mar 2025 14:26:47 +0530
+Subject: [PATCH 01/18] New files added related to jenkins build.
+
+---
+ .github/workflows/jenkinsbuild.yaml      | 13 +++++++++++++
+ env.bat                                  |  5 +++++
+ scripts/git-hooks/pre-commit-python.hook |  2 +-
+ 3 files changed, 19 insertions(+), 1 deletion(-)
+ create mode 100644 .github/workflows/jenkinsbuild.yaml
+ create mode 100644 env.bat
+
+diff --git a/.github/workflows/jenkinsbuild.yaml b/.github/workflows/jenkinsbuild.yaml
+new file mode 100644
+index 0000000000..ee34cc00d2
+--- /dev/null
++++ b/.github/workflows/jenkinsbuild.yaml
+@@ -0,0 +1,13 @@
++name: Trigger Jenkins
++on:
++  push:
++    branches:
++      - 'vicon_main_1.22'
++
++jobs:
++  Jenkins_Job:
++    name: Build develop Branch
++    runs-on: self-hosted
++    steps:
++      - name: Step 1 - Post to jenkins
++        run: curl.exe -X POST "http://build:11ae983652068d3bdd54dfb6a552a193eb@192.168.1.156:8080/job/GStreamer/build"
+diff --git a/env.bat b/env.bat
+new file mode 100644
+index 0000000000..ed5649a8df
+--- /dev/null
++++ b/env.bat
+@@ -0,0 +1,5 @@
++set PKG_CONFIG_PATH=C:\gstreamer\1.0\msvc_x86_64\lib\pkgconfig
++SET LIB=C:\gstreamer\1.0\msvc_x86_64\lib;%LIB%
++SET LIB=c:\gstreamer\1.0\msvc_x86_64\lib;%LIB%
++set INCLUDE=C:\gstreamer\1.0\msvc_x86_64\include;%INCLUDE%
++set INCLUDE=C:\gstreamer\1.0\msvc_x86_64\include\pango-1.0\;%INCLUDE%
+\ No newline at end of file
+diff --git a/scripts/git-hooks/pre-commit-python.hook b/scripts/git-hooks/pre-commit-python.hook
+index 6bcef6ed99..20eef79332 100755
+--- a/scripts/git-hooks/pre-commit-python.hook
++++ b/scripts/git-hooks/pre-commit-python.hook
+@@ -1,4 +1,4 @@
+-#!/usr/bin/env python3
++#!/usr/bin/env python
+ import os
+ import subprocess
+ import sys
+-- 
+2.40.1.windows.1
+

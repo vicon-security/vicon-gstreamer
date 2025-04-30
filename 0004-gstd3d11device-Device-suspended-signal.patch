@@ -1,0 +1,122 @@
+From d0cab56464f1343974b46afef9e81650f104494c Mon Sep 17 00:00:00 2001
+From: smomin7 <smomin@vicon-security.com>
+Date: Wed, 2 Apr 2025 15:00:54 +0530
+Subject: [PATCH 04/18] gstd3d11device: Device suspended signal.
+
+---
+ .../gst-libs/gst/d3d11/gstd3d11device.cpp     | 46 +++++++++++++++++++
+ .../gst-libs/gst/d3d11/gstd3d11device.h       |  3 ++
+ .../gst-libs/gst/d3d11/gstd3d11utils.cpp      |  5 ++
+ 3 files changed, 54 insertions(+)
+
+diff --git a/subprojects/gst-plugins-bad/gst-libs/gst/d3d11/gstd3d11device.cpp b/subprojects/gst-plugins-bad/gst-libs/gst/d3d11/gstd3d11device.cpp
+index 67b9220dbd..e7702ea1ae 100644
+--- a/subprojects/gst-plugins-bad/gst-libs/gst/d3d11/gstd3d11device.cpp
++++ b/subprojects/gst-plugins-bad/gst-libs/gst/d3d11/gstd3d11device.cpp
+@@ -104,6 +104,15 @@ static GParamSpec *pspec_removed_reason = nullptr;
+ #define DEFAULT_ADAPTER 0
+ #define DEFAULT_CREATE_FLAGS 0
+ 
++enum
++{
++  /* signals */
++  SIGNAL_SUSPENDED,
++  LAST_SIGNAL
++};
++
++static guint gst_d3d11_device_signals[LAST_SIGNAL] = { 0, };
++
+ /* *INDENT-OFF* */
+ struct _GstD3D11DevicePrivate
+ {
+@@ -128,6 +137,7 @@ struct _GstD3D11DevicePrivate
+   gchar *description = nullptr;
+   guint create_flags = 0;
+   gint64 adapter_luid = 0;
++  gboolean suspended;
+ 
+   ID3D11Device *device = nullptr;
+   ID3D11Device4 *device4 = nullptr;
+@@ -455,6 +465,20 @@ gst_d3d11_device_class_init (GstD3D11DeviceClass * klass)
+   g_object_class_install_property (gobject_class, PROP_DEVICE_REMOVED_REASON,
+       pspec_removed_reason);
+ 
++  /**
++   * GstD3D11Device::suspended:
++   * @device: the #d3d11device
++   *
++   * Emitted when the D3D11Device gets suspended by the DirectX (error
++   * DXGI_ERROR_DEVICE_REMOVED have been returned from some of the DirectX
++   * operations).
++   *
++   * Since: cemtrex patch to 1.22.4
++   */
++  gst_d3d11_device_signals[SIGNAL_SUSPENDED] =
++    g_signal_new ("suspended", G_TYPE_FROM_CLASS(klass), G_SIGNAL_RUN_LAST,
++      0, NULL, NULL, NULL, G_TYPE_NONE, 0, G_TYPE_NONE);
++
+   gst_d3d11_memory_init_once ();
+ }
+ 
+@@ -1492,6 +1516,28 @@ gst_d3d11_device_get_format (GstD3D11Device * device, GstVideoFormat format,
+   return TRUE;
+ }
+ 
++void
++gst_d3d11_device_mark_suspended (GstD3D11Device* device)
++{
++  g_return_if_fail (GST_IS_D3D11_DEVICE (device));
++
++  if (!device->priv->suspended) {
++    HRESULT reason;
++    gchar* error_text = NULL;
++
++    reason = device->priv->device->GetDeviceRemovedReason ();
++    error_text = g_win32_error_message ((guint)reason);
++    GST_ERROR_OBJECT (device, "D3D11Device have been suspended. Reason: 0x%x, %s",
++      reason, error_text);
++    g_critical ("D3D11Device suspended");
++    g_free (error_text);
++
++    g_signal_emit (device, gst_d3d11_device_signals[SIGNAL_SUSPENDED], 0,
++      NULL);
++    device->priv->suspended = TRUE;
++  }
++}
++
+ GST_DEFINE_MINI_OBJECT_TYPE (GstD3D11Fence, gst_d3d11_fence);
+ 
+ struct _GstD3D11FencePrivate
+diff --git a/subprojects/gst-plugins-bad/gst-libs/gst/d3d11/gstd3d11device.h b/subprojects/gst-plugins-bad/gst-libs/gst/d3d11/gstd3d11device.h
+index 2f77d989dc..5e3ac2f15a 100644
+--- a/subprojects/gst-plugins-bad/gst-libs/gst/d3d11/gstd3d11device.h
++++ b/subprojects/gst-plugins-bad/gst-libs/gst/d3d11/gstd3d11device.h
+@@ -119,6 +119,9 @@ gboolean              gst_d3d11_device_get_format         (GstD3D11Device * devi
+                                                            GstVideoFormat format,
+                                                            GstD3D11Format * device_format);
+ 
++/* Used internally by gstd3d11utils.cpp */
++void                  gst_d3d11_device_mark_suspended     (GstD3D11Device* device);
++
+ /**
+  * GstD3D11Fence:
+  *
+diff --git a/subprojects/gst-plugins-bad/gst-libs/gst/d3d11/gstd3d11utils.cpp b/subprojects/gst-plugins-bad/gst-libs/gst/d3d11/gstd3d11utils.cpp
+index e9239c1fdd..aac387a86a 100644
+--- a/subprojects/gst-plugins-bad/gst-libs/gst/d3d11/gstd3d11utils.cpp
++++ b/subprojects/gst-plugins-bad/gst-libs/gst/d3d11/gstd3d11utils.cpp
+@@ -570,6 +570,11 @@ gboolean
+ _gst_d3d11_result (HRESULT hr, GstD3D11Device * device, GstDebugCategory * cat,
+     const gchar * file, const gchar * function, gint line)
+ {
++  if (hr == DXGI_ERROR_DEVICE_REMOVED || hr == DXGI_ERROR_DEVICE_RESET)
++  {
++    gst_d3d11_device_mark_suspended (device);
++  }
++
+ #ifndef GST_DISABLE_GST_DEBUG
+ #if (HAVE_D3D11SDKLAYERS_H || HAVE_DXGIDEBUG_H)
+   if (device) {
+-- 
+2.40.1.windows.1
+

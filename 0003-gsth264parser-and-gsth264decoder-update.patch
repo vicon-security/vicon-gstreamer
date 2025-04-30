@@ -1,0 +1,80 @@
+From eb60b20464981dbe4f2cbcf0ae0071cb0b93ee6e Mon Sep 17 00:00:00 2001
+From: smomin7 <smomin@vicon-security.com>
+Date: Thu, 27 Mar 2025 17:23:16 +0530
+Subject: [PATCH 03/18] gsth264parser and gsth264decoder update.
+
+---
+ .../gst-libs/gst/codecparsers/gsth264parser.c              | 4 ++--
+ .../gst-plugins-bad/gst-libs/gst/codecparsers/nalutils.h   | 7 +++++++
+ .../gst-plugins-bad/gst-libs/gst/codecs/gsth264decoder.c   | 1 +
+ .../gst-plugins-bad/gst/videoparsers/gsth264parse.c        | 2 +-
+ 4 files changed, 11 insertions(+), 3 deletions(-)
+
+diff --git a/subprojects/gst-plugins-bad/gst-libs/gst/codecparsers/gsth264parser.c b/subprojects/gst-plugins-bad/gst-libs/gst/codecparsers/gsth264parser.c
+index 92383edbbd..7704448ed2 100644
+--- a/subprojects/gst-plugins-bad/gst-libs/gst/codecparsers/gsth264parser.c
++++ b/subprojects/gst-plugins-bad/gst-libs/gst/codecparsers/gsth264parser.c
+@@ -1108,7 +1108,7 @@ gst_h264_parser_parse_user_data_unregistered (GstH264NalParser * nalparser,
+ 
+   data = g_malloc0 (payload_size);
+   for (i = 0; i < payload_size; ++i) {
+-    READ_UINT8 (nr, data[i], 8);
++    VICON_READ_UINT8 (nr, data[i], 8);
+   }
+ 
+   urud->data = data;
+@@ -1117,7 +1117,7 @@ gst_h264_parser_parse_user_data_unregistered (GstH264NalParser * nalparser,
+ 
+ error:
+   {
+-    GST_WARNING ("error parsing \"User Data Unregistered\"");
++    GST_DEBUG ("error parsing \"User Data Unregistered\"");
+     g_clear_pointer (&data, g_free);
+     return GST_H264_PARSER_ERROR;
+   }
+diff --git a/subprojects/gst-plugins-bad/gst-libs/gst/codecparsers/nalutils.h b/subprojects/gst-plugins-bad/gst-libs/gst/codecparsers/nalutils.h
+index 9c169cb7b6..2c90a4b579 100644
+--- a/subprojects/gst-plugins-bad/gst-libs/gst/codecparsers/nalutils.h
++++ b/subprojects/gst-plugins-bad/gst-libs/gst/codecparsers/nalutils.h
+@@ -134,6 +134,13 @@ gboolean nal_reader_get_se (NalReader * nr, gint32 * val);
+   } \
+ }
+ 
++#define VICON_READ_UINT8(nr, val, nbits) { \
++  if (!nal_reader_get_bits_uint8 (nr, &val, nbits)) { \
++    GST_DEBUG ("failed to read uint8 for '" G_STRINGIFY (val) "', nbits: %d", nbits); \
++    goto error; \
++  } \
++}
++
+ #define READ_UINT16(nr, val, nbits) { \
+   if (!nal_reader_get_bits_uint16 (nr, &val, nbits)) { \
+   GST_WARNING ("failed to read uint16 for '" G_STRINGIFY (val) "', nbits: %d", nbits); \
+diff --git a/subprojects/gst-plugins-bad/gst-libs/gst/codecs/gsth264decoder.c b/subprojects/gst-plugins-bad/gst-libs/gst/codecs/gsth264decoder.c
+index 369c6d839e..276628b04a 100644
+--- a/subprojects/gst-plugins-bad/gst-libs/gst/codecs/gsth264decoder.c
++++ b/subprojects/gst-plugins-bad/gst-libs/gst/codecs/gsth264decoder.c
+@@ -939,6 +939,7 @@ _bump_dpb (GstH264Decoder * self, GstH264DpbBumpMode bump_level,
+ 
+     if (!to_output) {
+       GST_WARNING_OBJECT (self, "Bumping is needed but no picture to output");
++      gst_h264_decoder_clear_dpb(self, TRUE);
+       break;
+     }
+ 
+diff --git a/subprojects/gst-plugins-bad/gst/videoparsers/gsth264parse.c b/subprojects/gst-plugins-bad/gst/videoparsers/gsth264parse.c
+index 2fde4994bd..fb03a49d90 100644
+--- a/subprojects/gst-plugins-bad/gst/videoparsers/gsth264parse.c
++++ b/subprojects/gst-plugins-bad/gst/videoparsers/gsth264parse.c
+@@ -639,7 +639,7 @@ gst_h264_parse_process_sei (GstH264Parse * h264parse, GstH264NalUnit * nalu)
+ 
+   pres = gst_h264_parser_parse_sei (nalparser, nalu, &messages);
+   if (pres != GST_H264_PARSER_OK)
+-    GST_WARNING_OBJECT (h264parse, "failed to parse one or more SEI message");
++    GST_DEBUG_OBJECT (h264parse, "failed to parse one or more SEI message");
+ 
+   /* Even if pres != GST_H264_PARSER_OK, some message could have been parsed and
+    * stored in messages.
+-- 
+2.40.1.windows.1
+

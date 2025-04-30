@@ -1,0 +1,24 @@
+From c8ca7f072e120b0236a6a2e875744c136f1a5895 Mon Sep 17 00:00:00 2001
+From: smomin7 <smomin@vicon-security.com>
+Date: Wed, 2 Apr 2025 20:47:06 +0530
+Subject: [PATCH 08/18] gstd3d11window_32: assert for unexpected condition.
+
+---
+ subprojects/gst-plugins-bad/sys/d3d11/gstd3d11window_win32.cpp | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/subprojects/gst-plugins-bad/sys/d3d11/gstd3d11window_win32.cpp b/subprojects/gst-plugins-bad/sys/d3d11/gstd3d11window_win32.cpp
+index b9a807ea50..8cb35d1285 100644
+--- a/subprojects/gst-plugins-bad/sys/d3d11/gstd3d11window_win32.cpp
++++ b/subprojects/gst-plugins-bad/sys/d3d11/gstd3d11window_win32.cpp
+@@ -938,6 +938,7 @@ window_proc (HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
+       return DefWindowProcA (hWnd, uMsg, wParam, lParam);
+     }
+ 
++    g_assert(self->internal_hwnd == hWnd);
+     gst_d3d11_window_win32_handle_window_proc (self, hWnd, uMsg, wParam,
+         lParam);
+     g_rec_mutex_unlock (&self->hwnds_lock);
+-- 
+2.40.1.windows.1
+

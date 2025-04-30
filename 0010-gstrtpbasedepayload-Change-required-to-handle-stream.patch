@@ -1,0 +1,34 @@
+From 5497869635d5ae0f24f21730828866d5d0bc1ed7 Mon Sep 17 00:00:00 2001
+From: smomin7 <smomin@vicon-security.com>
+Date: Wed, 2 Apr 2025 20:51:14 +0530
+Subject: [PATCH 10/18] gstrtpbasedepayload: Change required to handle stream
+ switching from recording to live.
+
+---
+ .../gst-libs/gst/rtp/gstrtpbasedepayload.c               | 9 ++++++++-
+ 1 file changed, 8 insertions(+), 1 deletion(-)
+
+diff --git a/subprojects/gst-plugins-base/gst-libs/gst/rtp/gstrtpbasedepayload.c b/subprojects/gst-plugins-base/gst-libs/gst/rtp/gstrtpbasedepayload.c
+index 0d814de30c..e24b66a7a3 100644
+--- a/subprojects/gst-plugins-base/gst-libs/gst/rtp/gstrtpbasedepayload.c
++++ b/subprojects/gst-plugins-base/gst-libs/gst/rtp/gstrtpbasedepayload.c
+@@ -555,8 +555,15 @@ gst_rtp_base_depayload_setcaps (GstRTPBaseDepayload * filter, GstCaps * caps)
+     priv->onvif_mode = FALSE;
+   GST_DEBUG_OBJECT (filter, "Onvif mode: %d", priv->onvif_mode);
+ 
+-  if (priv->onvif_mode)
++  if (priv->onvif_mode){
+     filter->need_newsegment = FALSE;
++  }
++  else{
++    /*This change is required to handle stream switching from recording to live - Anand*/
++    GST_DEBUG ("need_newsegment flag coming from upstream: %d", filter->need_newsegment);
++    filter->need_newsegment = TRUE;
++    GST_DEBUG ("need_newsegment: %d", filter->need_newsegment);
++  }
+ 
+   /* get other values for newsegment */
+   value = gst_structure_get_value (caps_struct, "npt-start");
+-- 
+2.40.1.windows.1
+

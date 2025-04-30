@@ -1,0 +1,29 @@
+From ae9bab3e247e2eb079c76460f1908fbdd8b9488e Mon Sep 17 00:00:00 2001
+From: smomin7 <smomin@vicon-security.com>
+Date: Wed, 2 Apr 2025 20:48:18 +0530
+Subject: [PATCH 09/18] gstglcontext: add missing unref in opengl context
+ destroy.
+
+---
+ .../gst-plugins-base/gst-libs/gst/gl/egl/gstglcontext_egl.c  | 5 +++++
+ 1 file changed, 5 insertions(+)
+
+diff --git a/subprojects/gst-plugins-base/gst-libs/gst/gl/egl/gstglcontext_egl.c b/subprojects/gst-plugins-base/gst-libs/gst/gl/egl/gstglcontext_egl.c
+index 0eff87de09..ffd311feaf 100644
+--- a/subprojects/gst-plugins-base/gst-libs/gst/gl/egl/gstglcontext_egl.c
++++ b/subprojects/gst-plugins-base/gst-libs/gst/gl/egl/gstglcontext_egl.c
+@@ -1216,6 +1216,11 @@ gst_gl_context_egl_destroy_context (GstGLContext * context)
+     gst_object_unref (window);
+   }
+ 
++  if (window) {
++    gst_object_unref (window);
++    GST_DEBUG ("GL Context window unref \n");
++  }
++
+   g_clear_pointer (&egl->dma_formats, g_array_unref);
+ 
+   gst_gl_context_egl_activate (context, FALSE);
+-- 
+2.40.1.windows.1
+

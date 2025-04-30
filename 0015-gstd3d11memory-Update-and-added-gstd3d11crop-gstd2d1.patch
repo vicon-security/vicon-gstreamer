@@ -1,0 +1,2000 @@
+From 329030da3aa68ece2925cc7f3be95058de289bc6 Mon Sep 17 00:00:00 2001
+From: smomin7 <smomin@vicon-security.com>
+Date: Thu, 24 Apr 2025 18:18:56 +0530
+Subject: [PATCH 15/18] gstd3d11memory: Update and added gstd3d11crop &
+ gstd2d11d2d1 plugins.
+
+---
+ .../gst/d3d11/gstd3d11memory-private.h        |   2 +
+ .../gst-libs/gst/d3d11/gstd3d11memory.cpp     | 210 +++--
+ .../gst-libs/gst/d3d11/gstd3d11memory.h       |  11 +
+ .../sys/d3d11/gstd3d11crop.cpp                | 843 ++++++++++++++++++
+ .../gst-plugins-bad/sys/d3d11/gstd3d11crop.h  |  81 ++
+ .../sys/d3d11/gstd3d11d2d1.cpp                | 380 ++++++++
+ .../gst-plugins-bad/sys/d3d11/gstd3d11d2d1.h  |  66 ++
+ .../gst-plugins-bad/sys/d3d11/meson.build     |  14 +-
+ .../gst-plugins-bad/sys/d3d11/plugin.cpp      |  26 +
+ 9 files changed, 1574 insertions(+), 59 deletions(-)
+ create mode 100644 subprojects/gst-plugins-bad/sys/d3d11/gstd3d11crop.cpp
+ create mode 100644 subprojects/gst-plugins-bad/sys/d3d11/gstd3d11crop.h
+ create mode 100644 subprojects/gst-plugins-bad/sys/d3d11/gstd3d11d2d1.cpp
+ create mode 100644 subprojects/gst-plugins-bad/sys/d3d11/gstd3d11d2d1.h
+
+diff --git a/subprojects/gst-plugins-bad/gst-libs/gst/d3d11/gstd3d11memory-private.h b/subprojects/gst-plugins-bad/gst-libs/gst/d3d11/gstd3d11memory-private.h
+index 8436c4d8cd..01a09abc74 100644
+--- a/subprojects/gst-plugins-bad/gst-libs/gst/d3d11/gstd3d11memory-private.h
++++ b/subprojects/gst-plugins-bad/gst-libs/gst/d3d11/gstd3d11memory-private.h
+@@ -29,6 +29,8 @@ G_BEGIN_DECLS
+ 
+ struct _GstD3D11AllocationParams
+ {
++  /* Texture description per plane */
++  D3D11_TEXTURE2D_DESC desc[GST_VIDEO_MAX_PLANES];
+   GstVideoInfo info;
+   GstVideoInfo aligned_info;
+   GstD3D11Format d3d11_format;
+diff --git a/subprojects/gst-plugins-bad/gst-libs/gst/d3d11/gstd3d11memory.cpp b/subprojects/gst-plugins-bad/gst-libs/gst/d3d11/gstd3d11memory.cpp
+index d443ff1eab..7ea9e09047 100644
+--- a/subprojects/gst-plugins-bad/gst-libs/gst/d3d11/gstd3d11memory.cpp
++++ b/subprojects/gst-plugins-bad/gst-libs/gst/d3d11/gstd3d11memory.cpp
+@@ -402,6 +402,9 @@ struct _GstD3D11MemoryPrivate
+ 
+   GDestroyNotify notify = nullptr;
+   gpointer user_data = nullptr;
++
++  IDXGISurface* dxgi_surface = nullptr;
++  ID2D1RenderTarget* d2d1_render_target = nullptr;
+ };
+ 
+ static inline D3D11_MAP
+@@ -425,6 +428,7 @@ gst_d3d11_allocate_staging_texture (GstD3D11Device * device,
+ {
+   D3D11_TEXTURE2D_DESC desc = { 0, };
+   ID3D11Texture2D *texture = NULL;
++  GstD3D11DeviceLockGuard lk(device);
+   ID3D11Device *device_handle = gst_d3d11_device_get_device_handle (device);
+   HRESULT hr;
+ 
+@@ -452,6 +456,7 @@ gst_d3d11_memory_map_cpu_access (GstD3D11Memory * dmem, D3D11_MAP map_type)
+ {
+   GstD3D11MemoryPrivate *priv = dmem->priv;
+   HRESULT hr;
++  GstD3D11DeviceLockGuard lk(dmem->device);
+   ID3D11DeviceContext *device_context =
+       gst_d3d11_device_get_device_context_handle (dmem->device);
+ 
+@@ -477,6 +482,7 @@ gst_d3d11_memory_upload (GstD3D11Memory * dmem)
+       !GST_MEMORY_FLAG_IS_SET (dmem, GST_D3D11_MEMORY_TRANSFER_NEED_UPLOAD))
+     return;
+ 
++  GstD3D11DeviceLockGuard lk(dmem->device);
+   device_context = gst_d3d11_device_get_device_context_handle (dmem->device);
+   device_context->CopySubresourceRegion (priv->texture, priv->subresource_index,
+       0, 0, 0, priv->staging, 0, NULL);
+@@ -507,6 +513,7 @@ gst_d3d11_memory_download (GstD3D11Memory * dmem)
+     locked = TRUE;
+   }
+ 
++  GstD3D11DeviceLockGuard lk(dmem->device);
+   device_context = gst_d3d11_device_get_device_context_handle (dmem->device);
+   device_context->CopySubresourceRegion (priv->staging, 0, 0, 0, 0,
+       priv->texture, priv->subresource_index, NULL);
+@@ -600,6 +607,7 @@ static void
+ gst_d3d11_memory_unmap_cpu_access (GstD3D11Memory * dmem)
+ {
+   GstD3D11MemoryPrivate *priv = dmem->priv;
++  GstD3D11DeviceLockGuard lk(dmem->device);
+   ID3D11DeviceContext *device_context =
+       gst_d3d11_device_get_device_context_handle (dmem->device);
+ 
+@@ -875,6 +883,7 @@ create_shader_resource_views (GstD3D11Memory * mem)
+ 
+   memset (&resource_desc, 0, sizeof (D3D11_SHADER_RESOURCE_VIEW_DESC));
+ 
++  GstD3D11DeviceLockGuard lk(mem->device);
+   device_handle = gst_d3d11_device_get_device_handle (mem->device);
+ 
+   num_views = gst_d3d11_dxgi_format_get_resource_format (priv->desc.Format,
+@@ -1001,6 +1010,7 @@ create_render_target_views (GstD3D11Memory * mem)
+ 
+   memset (&render_desc, 0, sizeof (D3D11_RENDER_TARGET_VIEW_DESC));
+ 
++  GstD3D11DeviceLockGuard lk(mem->device);
+   device_handle = gst_d3d11_device_get_device_handle (mem->device);
+ 
+   num_views = gst_d3d11_dxgi_format_get_resource_format (priv->desc.Format,
+@@ -1484,6 +1494,65 @@ gst_d3d11_memory_get_nt_handle (GstD3D11Memory * mem, HANDLE * handle)
+   return TRUE;
+ }
+ 
++/**
++ * gst_d3d11_memory_get_d2d1_render_target:
++ * @mem: a #GstD3D11Memory
++ * @factory: a #ID2D1Factory
++ *
++ * Returns: (transfer none) (nullable): a pointer to the
++ * ID2D1RenderTarget or %NULL if it can't be created for this type of memory
++ *
++ * Since: Added by vicon
++ */
++ID2D1RenderTarget* gst_d3d11_memory_get_d2d1_render_target (GstD3D11Memory* mem,
++    ID2D1Factory* factory)
++{
++    g_return_val_if_fail (gst_is_d3d11_memory(GST_MEMORY_CAST(mem)), NULL);
++    g_return_val_if_fail (mem->priv != NULL, NULL);
++    g_return_val_if_fail (factory != NULL, NULL);
++
++    if (mem->priv->d2d1_render_target != NULL)
++        return mem->priv->d2d1_render_target;
++
++    const guint bind_flags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET;
++    if ((mem->priv->desc.BindFlags & bind_flags) != bind_flags) {
++        GST_ERROR ("Texture bind flags (%u) are not compatible", mem->priv->desc.BindFlags);
++        return NULL;
++    }
++
++    D2D1_RENDER_TARGET_PROPERTIES props =
++        D2D1::RenderTargetProperties(
++            D2D1_RENDER_TARGET_TYPE_DEFAULT,
++            D2D1::PixelFormat(DXGI_FORMAT_UNKNOWN, D2D1_ALPHA_MODE_PREMULTIPLIED),
++            0.0,
++            0.0);
++
++    ID2D1RenderTarget* pRenderTarget = nullptr;
++    IDXGISurface* dxgi_surface = nullptr;
++
++    HRESULT hr = ((ID3D11Resource*)mem->priv->texture)->QueryInterface(&dxgi_surface);
++    if (!gst_d3d11_result(hr, mem->device)) {
++        GST_ERROR("Could not query IDXGISurface, hr: 0x%x", (guint)hr);
++        return NULL;
++    }
++
++    ID2D1RenderTarget* render_target = NULL;
++    hr = factory->CreateDxgiSurfaceRenderTarget (
++        dxgi_surface,
++        &props,
++        &render_target);
++
++    if (!gst_d3d11_result (hr, mem->device)) {
++        GST_ERROR("Could not create CreateDxgiSurfaceRenderTarget, hr: 0x%x", (guint)hr);
++        dxgi_surface->Release();
++        return NULL;
++    }
++
++    mem->priv->d2d1_render_target = render_target;
++    mem->priv->dxgi_surface = dxgi_surface;
++    return render_target;
++}
++
+ /* GstD3D11Allocator */
+ struct _GstD3D11AllocatorPrivate
+ {
+@@ -1519,6 +1588,7 @@ gst_d3d11_memory_copy (GstMemory * mem, gssize offset, gssize size)
+   GstD3D11Memory *dmem = GST_D3D11_MEMORY_CAST (mem);
+   GstD3D11Memory *copy_dmem;
+   GstD3D11Device *device = dmem->device;
++  GstD3D11DeviceLockGuard lk(device);
+   ID3D11DeviceContext *device_context =
+       gst_d3d11_device_get_device_context_handle (device);
+   D3D11_TEXTURE2D_DESC dst_desc = { 0, };
+@@ -1535,8 +1605,6 @@ gst_d3d11_memory_copy (GstMemory * mem, gssize offset, gssize size)
+     return priv->fallback_copy (mem, offset, size);
+   }
+ 
+-  GstD3D11DeviceLockGuard lk (device);
+-
+   if (!gst_memory_map (mem, &info,
+           (GstMapFlags) (GST_MAP_READ | GST_MAP_D3D11))) {
+ 
+@@ -1618,24 +1686,26 @@ gst_d3d11_allocator_free (GstAllocator * allocator, GstMemory * mem)
+   dmem_priv->token_map.clear ();
+ 
+   if (dmem_priv->nt_handle)
+-    CloseHandle (dmem_priv->nt_handle);
+-
+-  GST_D3D11_CLEAR_COM (dmem_priv->keyed_mutex);
++      CloseHandle (dmem_priv->nt_handle);
++  {
++    GstD3D11DeviceLockGuard lk (dmem->device);
++    for (i = 0; i < GST_VIDEO_MAX_PLANES; i++) {
++      GST_D3D11_CLEAR_COM (dmem_priv->render_target_view[i]);
++      GST_D3D11_CLEAR_COM (dmem_priv->shader_resource_view[i]);
++    }
+ 
+-  for (i = 0; i < GST_VIDEO_MAX_PLANES; i++) {
+-    GST_D3D11_CLEAR_COM (dmem_priv->render_target_view[i]);
+-    GST_D3D11_CLEAR_COM (dmem_priv->shader_resource_view[i]);
++    GST_D3D11_CLEAR_COM(dmem_priv->keyed_mutex);
++    GST_D3D11_CLEAR_COM (dmem_priv->decoder_output_view);
++    GST_D3D11_CLEAR_COM (dmem_priv->processor_input_view);
++    GST_D3D11_CLEAR_COM (dmem_priv->processor_output_view);
++    GST_D3D11_CLEAR_COM (dmem_priv->dxgi_surface);
++    GST_D3D11_CLEAR_COM (dmem_priv->d2d1_render_target);
++    GST_D3D11_CLEAR_COM (dmem_priv->texture);
++    GST_D3D11_CLEAR_COM (dmem_priv->staging);
++    GST_D3D11_CLEAR_COM (dmem_priv->buffer);
++
++    GST_D3D11_CLEAR_COM (dmem_priv->decoder_handle);
+   }
+-
+-  GST_D3D11_CLEAR_COM (dmem_priv->decoder_output_view);
+-  GST_D3D11_CLEAR_COM (dmem_priv->processor_input_view);
+-  GST_D3D11_CLEAR_COM (dmem_priv->processor_output_view);
+-  GST_D3D11_CLEAR_COM (dmem_priv->texture);
+-  GST_D3D11_CLEAR_COM (dmem_priv->staging);
+-  GST_D3D11_CLEAR_COM (dmem_priv->buffer);
+-
+-  GST_D3D11_CLEAR_COM (dmem_priv->decoder_handle);
+-
+   gst_clear_object (&dmem->device);
+ 
+   if (dmem_priv->notify)
+@@ -1703,6 +1773,7 @@ gst_d3d11_allocator_alloc_internal (GstD3D11Allocator * self,
+   GstD3D11ClearRTVFunc clear_func = nullptr;
+   gboolean is_new_texture = TRUE;
+ 
++  GstD3D11DeviceLockGuard lk(device);
+   device_handle = gst_d3d11_device_get_device_handle (device);
+ 
+   if (!texture) {
+@@ -1750,7 +1821,6 @@ gst_d3d11_allocator_alloc_internal (GstD3D11Allocator * self,
+     return mem;
+ 
+   context_handle = gst_d3d11_device_get_device_context_handle (device);
+-  GstD3D11DeviceLockGuard lk (device);
+   clear_func (context_handle, rtv);
+ 
+   return mem;
+@@ -1827,6 +1897,7 @@ gst_d3d11_allocator_alloc_buffer (GstD3D11Allocator * allocator,
+     return nullptr;
+   }
+ 
++  GstD3D11DeviceLockGuard lk(device);
+   device_handle = gst_d3d11_device_get_device_handle (device);
+ 
+   hr = device_handle->CreateBuffer (desc, nullptr, &buffer);
+@@ -1958,7 +2029,10 @@ gst_d3d11_allocator_set_active (GstD3D11Allocator * allocator, gboolean active)
+ }
+ 
+ /* GstD3D11PoolAllocator */
+-/* *INDENT-OFF* */
++
++#define GST_D3D11_POOL_ALLOCATOR_IS_FLUSHING(alloc)  (g_atomic_int_get (&alloc->priv->flushing))
++const gpointer FLUSH_TOKEN = (gpointer)0x1;
++
+ struct _GstD3D11PoolAllocatorPrivate
+ {
+   _GstD3D11PoolAllocatorPrivate ()
+@@ -1975,7 +2049,7 @@ struct _GstD3D11PoolAllocatorPrivate
+   ID3D11Texture2D *texture = nullptr;
+   D3D11_TEXTURE2D_DESC desc;
+ 
+-  std::queue<GstMemory *> queue;
++  GAsyncQueue* memories;
+ 
+   SRWLOCK lock = SRWLOCK_INIT;
+   CONDITION_VARIABLE cond = CONDITION_VARIABLE_INIT;
+@@ -1985,6 +2059,7 @@ struct _GstD3D11PoolAllocatorPrivate
+   std::atomic<guint> outstanding;
+   guint cur_mems = 0;
+   gboolean flushing = TRUE;
++  gboolean blocked;
+ 
+   /* Calculated memory size, based on Direct3D11 staging texture map.
+    * Note that, we cannot know the actually staging texture memory size prior
+@@ -2023,6 +2098,7 @@ static void
+ gst_d3d11_pool_allocator_init (GstD3D11PoolAllocator * self)
+ {
+   self->priv = new GstD3D11PoolAllocatorPrivate ();
++  self->priv->memories = g_async_queue_new();
+ }
+ 
+ static void
+@@ -2033,6 +2109,7 @@ gst_d3d11_pool_allocator_finalize (GObject * object)
+   GST_DEBUG_OBJECT (self, "Finalize");
+ 
+   gst_d3d11_pool_allocator_stop (self);
++  g_async_queue_unref(self->priv->memories);
+   delete self->priv;
+ 
+   gst_clear_object (&self->device);
+@@ -2057,7 +2134,7 @@ gst_d3d11_pool_allocator_start (GstD3D11PoolAllocator * self)
+     priv->started = TRUE;
+     return TRUE;
+   }
+-
++  GstD3D11DeviceLockGuard lk(self->device);
+   device_handle = gst_d3d11_device_get_device_handle (self->device);
+ 
+   if (!priv->texture) {
+@@ -2093,7 +2170,7 @@ gst_d3d11_pool_allocator_start (GstD3D11PoolAllocator * self)
+     GST_D3D11_MEMORY_CAST (mem)->priv->subresource_index = i;
+ 
+     priv->cur_mems++;
+-    priv->queue.push (mem);
++    g_async_queue_push(priv->memories, mem);
+   }
+ 
+   priv->started = TRUE;
+@@ -2128,10 +2205,8 @@ gst_d3d11_pool_allocator_set_active (GstD3D11Allocator * allocator,
+     priv->active = FALSE;
+     WakeAllConditionVariable (&priv->cond);
+ 
+-    /* when all memory objects are in the pool, free them. Else they will be
+-     * freed when they are released */
+     GST_LOG_OBJECT (self, "outstanding memories %d, (in queue %u)",
+-        priv->outstanding.load (), (guint) priv->queue.size ());
++        priv->outstanding.load (), g_async_queue_length(priv->memories));
+     if (priv->outstanding == 0) {
+       if (!gst_d3d11_pool_allocator_stop (self)) {
+         GST_ERROR_OBJECT (self, "stop failed");
+@@ -2162,14 +2237,19 @@ static void
+ gst_d3d11_pool_allocator_clear_queue (GstD3D11PoolAllocator * self)
+ {
+   GstD3D11PoolAllocatorPrivate *priv = self->priv;
+-
++  GstMemory* memory;
+   GST_LOG_OBJECT (self, "Clearing queue");
+ 
+-  while (!priv->queue.empty ()) {
+-    GstMemory *mem = priv->queue.front ();
+-    priv->queue.pop ();
+-    gst_d3d11_pool_allocator_free_memory (self, mem);
+-  }
++  /* clear the pool */
++  for (;;)
++  {
++    memory = (GstMemory*)g_async_queue_try_pop(priv->memories);
++    if (memory == nullptr)
++        break;
++    if (memory == FLUSH_TOKEN)
++      continue;
++    gst_d3d11_pool_allocator_free_memory (self, memory);
++   }
+ 
+   GST_LOG_OBJECT (self, "Clear done");
+ }
+@@ -2206,7 +2286,7 @@ gst_d3d11_pool_allocator_release_memory (GstD3D11PoolAllocator * self,
+   mem->allocator = (GstAllocator *) gst_object_ref (_d3d11_memory_allocator);
+ 
+   /* keep it around in our queue */
+-  priv->queue.push (mem);
++  g_async_queue_push(self->priv->memories, mem);
+   priv->outstanding--;
+   if (priv->outstanding == 0 && priv->flushing)
+     gst_d3d11_pool_allocator_stop (self);
+@@ -2286,37 +2366,51 @@ static GstFlowReturn
+ gst_d3d11_pool_allocator_acquire_memory_internal (GstD3D11PoolAllocator * self,
+     GstMemory ** memory)
+ {
++  GstFlowReturn result;
+   GstD3D11PoolAllocatorPrivate *priv = self->priv;
+-  GstFlowReturn ret = GST_FLOW_ERROR;
+ 
+-  do {
+-    if (priv->flushing) {
+-      GST_DEBUG_OBJECT (self, "we are flushing");
+-      return GST_FLOW_FLUSHING;
+-    }
+ 
+-    if (!priv->queue.empty ()) {
+-      *memory = priv->queue.front ();
+-      priv->queue.pop ();
+-      GST_LOG_OBJECT (self, "acquired memory %p", *memory);
+-      return GST_FLOW_OK;
++  if (G_UNLIKELY (GST_D3D11_POOL_ALLOCATOR_IS_FLUSHING (self)))
++    goto flushing;
++  *memory = (GstMemory*)g_async_queue_try_pop (priv->memories);
++  if (*memory == FLUSH_TOKEN)
++    *memory = nullptr;
++  if (*memory != nullptr)
++    return GST_FLOW_OK;
++     
++  if (GST_D3D11_POOL_ALLOCATOR_IS_FLUSHING(self))
++    goto flushing;
++
++  /* no memory, try to allocate some more */
++  GST_LOG_OBJECT(self, "no memory, trying to allocate");
++  result = gst_d3d11_pool_allocator_alloc(self, memory);
++  if (result != GST_FLOW_EOS)
++    return result;
++      /* something went wrong, return error */
++  g_assert(*memory == nullptr);
++  for (;;)
++  {
++    GST_LOG_OBJECT(self, "waiting for free memory or flushing");
++    *memory = (GstMemory*)g_async_queue_pop(priv->memories);
++    g_assert(*memory != nullptr);
++    GST_LOG_OBJECT(self, "unblocked with %p", *memory);
++    if (*memory == FLUSH_TOKEN) {
++      *memory = nullptr;
+     }
++    if (GST_D3D11_POOL_ALLOCATOR_IS_FLUSHING(self))
++      goto flushing;
++    if (*memory == nullptr)
++      continue;
++    break;
++  }
+ 
+-    /* no memory, try to allocate some more */
+-    GST_LOG_OBJECT (self, "no memory, trying to allocate");
+-    ret = gst_d3d11_pool_allocator_alloc (self, memory);
+-    if (ret == GST_FLOW_OK)
+-      return ret;
+-
+-    /* something went wrong, return error */
+-    if (ret != GST_FLOW_EOS)
+-      break;
+-
+-    GST_LOG_OBJECT (self, "waiting for free memory or flushing");
+-    SleepConditionVariableSRW (&priv->cond, &priv->lock, INFINITE, 0);
+-  } while (TRUE);
++  g_assert(*memory != nullptr);
++  return GST_FLOW_OK;
+ 
+-  return ret;
++flushing:
++  g_clear_pointer(memory, gst_memory_unref);
++  GST_DEBUG_OBJECT (self, "we are flushing");
++  return GST_FLOW_FLUSHING;
+ }
+ 
+ /**
+diff --git a/subprojects/gst-plugins-bad/gst-libs/gst/d3d11/gstd3d11memory.h b/subprojects/gst-plugins-bad/gst-libs/gst/d3d11/gstd3d11memory.h
+index 1e4ec0aa7c..667ff963d7 100644
+--- a/subprojects/gst-plugins-bad/gst-libs/gst/d3d11/gstd3d11memory.h
++++ b/subprojects/gst-plugins-bad/gst-libs/gst/d3d11/gstd3d11memory.h
+@@ -25,6 +25,7 @@
+ #include <gst/video/video.h>
+ #include <gst/d3d11/gstd3d11_fwd.h>
+ #include <gst/d3d11/gstd3d11format.h>
++#include <d2d1.h>
+ 
+ G_BEGIN_DECLS
+ 
+@@ -259,6 +260,12 @@ GST_D3D11_API
+ gboolean                          gst_d3d11_memory_get_nt_handle  (GstD3D11Memory * mem,
+                                                                    HANDLE * handle);
+ 
++
++GST_D3D11_API
++ID2D1RenderTarget* gst_d3d11_memory_get_d2d1_render_target (GstD3D11Memory * mem,
++                                                            ID2D1Factory * factory);
++
++
+ /**
+  * GstD3D11Allocator:
+  *
+@@ -366,5 +373,9 @@ gboolean                gst_d3d11_pool_allocator_get_pool_size (GstD3D11PoolAllo
+                                                                 guint * max_size,
+                                                                 guint * outstanding_size);
+ 
++GST_D3D11_API
++void                    gst_d3d11_pool_allocator_set_blocked (GstD3D11Allocator* allocator,
++                                                                gboolean blocked);
++
+ G_END_DECLS
+ 
+diff --git a/subprojects/gst-plugins-bad/sys/d3d11/gstd3d11crop.cpp b/subprojects/gst-plugins-bad/sys/d3d11/gstd3d11crop.cpp
+new file mode 100644
+index 0000000000..0d18aeffb1
+--- /dev/null
++++ b/subprojects/gst-plugins-bad/sys/d3d11/gstd3d11crop.cpp
+@@ -0,0 +1,843 @@
++/*
++ * GStreamer
++ * Copyright (C) 2005 Thomas Vander Stichele <thomas@apestaart.org>
++ * Copyright (C) 2005 Ronald S. Bultje <rbultje@ronald.bitfreak.net>
++ * Copyright (C) 2022  <<user@hostname.org>>
++ * 
++ * Permission is hereby granted, free of charge, to any person obtaining a
++ * copy of this software and associated documentation files (the "Software"),
++ * to deal in the Software without restriction, including without limitation
++ * the rights to use, copy, modify, merge, publish, distribute, sublicense,
++ * and/or sell copies of the Software, and to permit persons to whom the
++ * Software is furnished to do so, subject to the following conditions:
++ *
++ * The above copyright notice and this permission notice shall be included in
++ * all copies or substantial portions of the Software.
++ *
++ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
++ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
++ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
++ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
++ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
++ * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
++ * DEALINGS IN THE SOFTWARE.
++ *
++ * Alternatively, the contents of this file may be used under the
++ * GNU Lesser General Public License Version 2.1 (the "LGPL"), in
++ * which case the following provisions apply instead of the ones
++ * mentioned above:
++ *
++ * This library is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU Library General Public
++ * License as published by the Free Software Foundation; either
++ * version 2 of the License, or (at your option) any later version.
++ *
++ * This library is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * Library General Public License for more details.
++ *
++ * You should have received a copy of the GNU Library General Public
++ * License along with this library; if not, write to the
++ * Free Software Foundation, Inc., 59 Temple Place - Suite 330,
++ * Boston, MA 02111-1307, USA.
++ */
++
++/**
++ * SECTION:element-d3d11crop
++ *
++ * FIXME:Describe d3d11crop here.
++ *
++ * <refsect2>
++ * <title>Example launch line</title>
++ * |[
++ * gst-launch -v -m fakesrc ! d3d11crop ! fakesink silent=TRUE
++ * ]|
++ * </refsect2>
++ */
++
++#ifdef HAVE_CONFIG_H
++#  include <config.h>
++#endif
++
++#include <gst/gst.h>
++
++#include "gstd3d11crop.h"
++
++//GST_DEBUG_CATEGORY_STATIC (gst_d3d11crop_debug);
++//#define GST_CAT_DEFAULT gst_d3d11crop_debug
++
++/* Filter signals and args */
++enum
++{
++  /* FILL ME */
++  LAST_SIGNAL
++};
++
++enum
++{
++  PROP_0,
++  PROP_SILENT,
++  PROP_RIGHT,
++  PROP_LEFT,
++  PROP_BOTTOM,
++  PROP_TOP
++};
++
++/* the capabilities of the inputs and outputs.
++ *
++ * describe the real formats here.
++ */
++static GstStaticCaps sink_template_caps =
++GST_STATIC_CAPS(GST_VIDEO_CAPS_MAKE(GST_D3D11_ALL_FORMATS) "; "
++    GST_VIDEO_CAPS_MAKE_WITH_FEATURES
++    (GST_CAPS_FEATURE_MEMORY_SYSTEM_MEMORY ","
++        GST_CAPS_FEATURE_META_GST_VIDEO_OVERLAY_COMPOSITION,
++        GST_D3D11_ALL_FORMATS) "; "
++    GST_VIDEO_CAPS_MAKE_WITH_FEATURES(GST_CAPS_FEATURE_MEMORY_D3D11_MEMORY,
++        GST_D3D11_ALL_FORMATS) ";"
++    GST_VIDEO_CAPS_MAKE_WITH_FEATURES(GST_CAPS_FEATURE_MEMORY_D3D11_MEMORY
++        "," GST_CAPS_FEATURE_META_GST_VIDEO_OVERLAY_COMPOSITION,
++        GST_D3D11_ALL_FORMATS));
++
++static GstStaticCaps src_template_caps =
++GST_STATIC_CAPS(GST_VIDEO_CAPS_MAKE_WITH_FEATURES
++(GST_CAPS_FEATURE_MEMORY_D3D11_MEMORY, GST_D3D11_ALL_FORMATS) "; "
++GST_VIDEO_CAPS_MAKE_WITH_FEATURES
++(GST_CAPS_FEATURE_MEMORY_D3D11_MEMORY ","
++    GST_CAPS_FEATURE_META_GST_VIDEO_OVERLAY_COMPOSITION,
++    GST_D3D11_ALL_FORMATS) ";"
++    GST_VIDEO_CAPS_MAKE(GST_D3D11_ALL_FORMATS) "; "
++    GST_VIDEO_CAPS_MAKE_WITH_FEATURES
++    (GST_CAPS_FEATURE_MEMORY_SYSTEM_MEMORY ","
++        GST_CAPS_FEATURE_META_GST_VIDEO_OVERLAY_COMPOSITION,
++        GST_D3D11_ALL_FORMATS));
++
++#define gst_d3d11crop_parent_class parent_class
++G_DEFINE_TYPE (Gstd3d11crop, gst_d3d11crop, GST_TYPE_D3D11_BASE_FILTER);
++
++GST_ELEMENT_REGISTER_DEFINE (d3d11crop, "d3d11crop", GST_RANK_NONE,
++    GST_TYPE_D3D11CROP);
++
++static void gst_d3d11crop_set_property (GObject * object,
++    guint prop_id, const GValue * value, GParamSpec * pspec);
++static void gst_d3d11crop_get_property (GObject * object,
++    guint prop_id, GValue * value, GParamSpec * pspec);
++
++static gboolean gst_d3d11crop_sink_event (GstPad * pad,
++    GstObject * parent, GstEvent * event);
++static GstFlowReturn gst_d3d11crop_chain (GstPad * pad,
++    GstObject * parent, GstBuffer * buf);
++
++static gboolean
++gst_d3d11_crop_decide_allocation(GstBaseTransform* trans, GstQuery* query);
++static GstFlowReturn
++gst_d3d11_crop_transform(GstBaseTransform* trans, GstBuffer* inbuf,
++    GstBuffer* outbuf);
++static gboolean
++gst_d3d11_crop_set_info(GstD3D11BaseFilter* filter,
++    GstCaps* incaps, GstVideoInfo* in_info, GstCaps* outcaps,
++    GstVideoInfo* out_info);
++static GstCaps*
++gst_d3d11_crop_transform_caps(GstBaseTransform* trans,
++    GstPadDirection direction, GstCaps* caps, GstCaps* filter);
++static void
++gst_d3d11_crop_before_transform(GstBaseTransform* trans, GstBuffer* in);
++
++/* GObject vmethod implementations */
++
++/* initialize the d3d11crop's class */
++static void
++gst_d3d11crop_class_init (Gstd3d11cropClass * klass)
++{
++  GObjectClass *gobject_class;
++  GstElementClass *gstelement_class;
++  GstBaseTransformClass* trans_class = GST_BASE_TRANSFORM_CLASS(klass);
++  GstD3D11BaseFilterClass* bfilter_class = GST_D3D11_BASE_FILTER_CLASS(klass);
++  GstCaps* caps;
++
++  gobject_class = (GObjectClass *) klass;
++  gstelement_class = (GstElementClass *) klass;
++
++  gobject_class->set_property = gst_d3d11crop_set_property;
++  gobject_class->get_property = gst_d3d11crop_get_property;
++
++  g_object_class_install_property (gobject_class, PROP_SILENT,
++      g_param_spec_boolean ("silent", "Silent", "Produce verbose output ?",
++          FALSE, G_PARAM_READWRITE));
++
++  g_object_class_install_property(gobject_class, PROP_LEFT,
++      g_param_spec_int("left",
++          "LEFT",
++          "left position",
++          0,
++          G_MAXINT16,
++          1,
++          G_PARAM_READWRITE));
++
++  g_object_class_install_property(gobject_class, PROP_RIGHT,
++      g_param_spec_int("right",
++          "RIGHT",
++          "right position",
++          0,
++          G_MAXINT16,
++          1,
++          G_PARAM_READWRITE));
++
++  g_object_class_install_property(gobject_class, PROP_BOTTOM,
++      g_param_spec_int("bottom",
++          "bottom",
++          "bottom position",
++          0,
++          G_MAXINT16,
++          1,
++          G_PARAM_READWRITE));
++
++  g_object_class_install_property(gobject_class, PROP_TOP,
++      g_param_spec_int("top",
++          "top",
++          "top position",
++          0,
++          G_MAXINT16,
++          1,
++          G_PARAM_READWRITE));
++
++  caps = gst_d3d11_get_updated_template_caps(&sink_template_caps);
++  gst_element_class_add_pad_template(gstelement_class,
++      gst_pad_template_new("sink", GST_PAD_SINK, GST_PAD_ALWAYS, caps));
++  gst_caps_unref(caps);
++
++  caps = gst_d3d11_get_updated_template_caps(&src_template_caps);
++  gst_element_class_add_pad_template(gstelement_class,
++      gst_pad_template_new("src", GST_PAD_SRC, GST_PAD_ALWAYS, caps));
++  gst_caps_unref(caps);
++
++  gst_element_class_set_details_simple (gstelement_class,
++      "d3d11crop",
++      "FIXME:Generic",
++      "FIXME:Generic Template Element", " <<user@hostname.org>>");
++
++  trans_class->passthrough_on_same_caps = TRUE;
++  trans_class->before_transform =
++      GST_DEBUG_FUNCPTR(gst_d3d11_crop_before_transform);
++  trans_class->transform_caps =
++      GST_DEBUG_FUNCPTR(gst_d3d11_crop_transform_caps);
++  trans_class->decide_allocation =
++      GST_DEBUG_FUNCPTR(gst_d3d11_crop_decide_allocation);
++  trans_class->transform = GST_DEBUG_FUNCPTR(gst_d3d11_crop_transform);
++  bfilter_class->set_info = GST_DEBUG_FUNCPTR(gst_d3d11_crop_set_info);
++  trans_class->transform_caps =
++      GST_DEBUG_FUNCPTR(gst_d3d11_crop_transform_caps);
++}
++
++static void
++gst_d3d11_crop_before_transform(GstBaseTransform* trans, GstBuffer* in)
++{
++    Gstd3d11crop* crop = GST_D3D11CROP(trans);
++    GstClockTime timestamp, stream_time;
++
++    timestamp = GST_BUFFER_TIMESTAMP(in);
++    stream_time =
++        gst_segment_to_stream_time(&trans->segment, GST_FORMAT_TIME, timestamp);
++
++    GST_DEBUG_OBJECT(crop, "sync to %" GST_TIME_FORMAT,
++        GST_TIME_ARGS(timestamp));
++
++    if (GST_CLOCK_TIME_IS_VALID(stream_time))
++        gst_object_sync_values(GST_OBJECT(crop), stream_time);
++}
++
++static GstCaps*
++_set_caps_features(const GstCaps* caps, const gchar* feature_name)
++{
++    guint i, j, m, n;
++    GstCaps* tmp;
++    GstCapsFeatures* overlay_feature =
++        gst_caps_features_from_string
++        (GST_CAPS_FEATURE_META_GST_VIDEO_OVERLAY_COMPOSITION);
++
++    tmp = gst_caps_new_empty();
++
++    n = gst_caps_get_size(caps);
++    for (i = 0; i < n; i++) {
++        GstCapsFeatures* features, * orig_features;
++        GstStructure* s = gst_caps_get_structure(caps, i);
++
++        orig_features = gst_caps_get_features(caps, i);
++        features = gst_caps_features_new(feature_name, NULL);
++
++        if (gst_caps_features_is_any(orig_features)) {
++            gst_caps_append_structure_full(tmp, gst_structure_copy(s),
++                gst_caps_features_copy(features));
++
++            if (!gst_caps_features_contains(features,
++                GST_CAPS_FEATURE_META_GST_VIDEO_OVERLAY_COMPOSITION))
++                gst_caps_features_add(features,
++                    GST_CAPS_FEATURE_META_GST_VIDEO_OVERLAY_COMPOSITION);
++        }
++        else {
++            m = gst_caps_features_get_size(orig_features);
++            for (j = 0; j < m; j++) {
++                const gchar* feature = gst_caps_features_get_nth(orig_features, j);
++
++                /* if we already have the features */
++                if (gst_caps_features_contains(features, feature))
++                    continue;
++
++                if (g_strcmp0(feature, GST_CAPS_FEATURE_MEMORY_SYSTEM_MEMORY) == 0)
++                    continue;
++
++                if (gst_caps_features_contains(overlay_feature, feature)) {
++                    gst_caps_features_add(features, feature);
++                }
++            }
++        }
++
++        gst_caps_append_structure_full(tmp, gst_structure_copy(s), features);
++    }
++
++    gst_caps_features_free(overlay_feature);
++
++    return tmp;
++}
++
++
++
++
++static gint
++gst_d3d11crop_transform_dimension(gint val, gint delta)
++{
++    gint64 new_val = (gint64)val + (gint64)delta;
++
++    new_val = CLAMP(new_val, 1, G_MAXINT);
++
++    return (gint)new_val;
++}
++
++static gboolean
++gst_d3d11crop_transform_dimension_value(const GValue* src_val,
++    gint delta, GValue* dest_val, GstPadDirection direction, gboolean dynamic)
++{
++    gboolean ret = TRUE;
++
++    if (G_VALUE_HOLDS_INT(src_val)) {
++        gint ival = g_value_get_int(src_val);
++        ival = gst_d3d11crop_transform_dimension(ival, delta);
++
++        if (dynamic) {
++            if (direction == GST_PAD_SRC) {
++                if (ival == G_MAXINT) {
++                    g_value_init(dest_val, G_TYPE_INT);
++                    g_value_set_int(dest_val, ival);
++                }
++                else {
++                    g_value_init(dest_val, GST_TYPE_INT_RANGE);
++                    gst_value_set_int_range(dest_val, ival, G_MAXINT);
++                }
++            }
++            else {
++                if (ival == 1) {
++                    g_value_init(dest_val, G_TYPE_INT);
++                    g_value_set_int(dest_val, ival);
++                }
++                else {
++                    g_value_init(dest_val, GST_TYPE_INT_RANGE);
++                    gst_value_set_int_range(dest_val, 1, ival);
++                }
++            }
++        }
++        else {
++            g_value_init(dest_val, G_TYPE_INT);
++            g_value_set_int(dest_val, ival);
++        }
++    }
++    else if (GST_VALUE_HOLDS_INT_RANGE(src_val)) {
++        gint min = gst_value_get_int_range_min(src_val);
++        gint max = gst_value_get_int_range_max(src_val);
++
++        min = gst_d3d11crop_transform_dimension(min, delta);
++        max = gst_d3d11crop_transform_dimension(max, delta);
++
++        if (dynamic) {
++            if (direction == GST_PAD_SRC)
++                max = G_MAXINT;
++            else
++                min = 1;
++        }
++
++        if (min == max) {
++            g_value_init(dest_val, G_TYPE_INT);
++            g_value_set_int(dest_val, min);
++        }
++        else {
++            g_value_init(dest_val, GST_TYPE_INT_RANGE);
++            gst_value_set_int_range(dest_val, min, max);
++        }
++    }
++    else if (GST_VALUE_HOLDS_LIST(src_val)) {
++        gint i;
++
++        g_value_init(dest_val, GST_TYPE_LIST);
++
++        for (i = 0; i < gst_value_list_get_size(src_val); ++i) {
++            const GValue* list_val;
++            GValue newval = G_VALUE_INIT;
++
++            list_val = gst_value_list_get_value(src_val, i);
++            if (gst_d3d11crop_transform_dimension_value(list_val, delta, &newval,
++                direction, dynamic))
++                gst_value_list_append_value(dest_val, &newval);
++
++            g_value_unset(&newval);
++        }
++
++        if (gst_value_list_get_size(dest_val) == 0) {
++            g_value_unset(dest_val);
++            ret = FALSE;
++        }
++    }
++    else {
++        ret = FALSE;
++    }
++
++    return ret;
++}
++
++static GstCaps* transform_caps_set(Gstd3d11crop *vcrop, GstCaps *caps, GstCaps *filter_caps, GstPadDirection direction, int dx, int dy)
++{
++    GstCaps *other_caps = gst_caps_new_empty();
++
++    for (int i = 0; i < gst_caps_get_size(caps); ++i) {
++        const GValue* v;
++        GstStructure* structure, * new_structure;
++        GValue w_val = G_VALUE_INIT, h_val = G_VALUE_INIT;
++        GstCapsFeatures* features;
++
++        structure = gst_caps_get_structure(caps, i);
++        features = gst_caps_get_features(caps, i);
++
++        v = gst_structure_get_value(structure, "width");
++        if (!gst_d3d11crop_transform_dimension_value(v, dx, &w_val, direction,
++            0)) {
++            GST_WARNING_OBJECT(vcrop, "could not transform width value with dx=%d"
++                ", caps structure=%" GST_PTR_FORMAT, dx, structure);
++            continue;
++        }
++
++        v = gst_structure_get_value(structure, "height");
++        if (!gst_d3d11crop_transform_dimension_value(v, dy, &h_val, direction,
++            0)) {
++            g_value_unset(&w_val);
++            GST_WARNING_OBJECT(vcrop, "could not transform height value with dy=%d"
++                ", caps structure=%" GST_PTR_FORMAT, dy, structure);
++            continue;
++        }
++
++        new_structure = gst_structure_copy(structure);
++        gst_structure_set_value(new_structure, "width", &w_val);
++        gst_structure_set_value(new_structure, "height", &h_val);
++        g_value_unset(&w_val);
++        g_value_unset(&h_val);
++
++        GST_LOG_OBJECT(vcrop, "transformed structure %2d: %" GST_PTR_FORMAT
++            " => %" GST_PTR_FORMAT "features %" GST_PTR_FORMAT, i, structure,
++            new_structure, features);
++        gst_caps_append_structure(other_caps, new_structure);
++
++        gst_caps_set_features(other_caps, i, gst_caps_features_copy(features));
++    }
++
++    if (!gst_caps_is_empty(other_caps) && filter_caps) {
++        GstCaps* tmp = gst_caps_intersect_full(filter_caps, other_caps,
++            GST_CAPS_INTERSECT_FIRST);
++        gst_caps_replace(&other_caps, tmp);
++        gst_caps_unref(tmp);
++    }
++
++    return other_caps;
++}
++
++
++static GstCaps*
++gst_d3d11_crop_transform_caps(GstBaseTransform* trans,
++    GstPadDirection direction, GstCaps* caps, GstCaps* filter_caps)
++{
++    GstCaps* tmp, * tmp2;
++    GstCaps* result;
++    Gstd3d11crop* crop = GST_D3D11CROP(trans);
++    int width = 0;
++    int height = 0;
++    int dx, dy;
++
++    width  = crop->right  - crop->left;
++    height = crop->bottom - crop->top;
++    if (direction == GST_PAD_SRC) {
++        dx = crop->left + crop->right;
++        dy = crop->top + crop->bottom;
++    }
++    else {
++        dx = -(crop->left + crop->right);
++        dy = -(crop->top + crop->bottom);
++    }
++
++    /* Get all possible caps that we can transform to */
++    //tmp = gst_d3d11_base_convert_caps_rangify_size_info(caps, width, height);
++    tmp = transform_caps_set(crop, caps, filter_caps, direction, dx, dy);
++    if (filter_caps) {
++        tmp2 = gst_caps_intersect_full(filter_caps, tmp, GST_CAPS_INTERSECT_FIRST);
++        gst_caps_unref(tmp);
++        tmp = tmp2;
++    }
++
++    result = tmp;
++    GST_DEBUG_OBJECT(trans, "transformed %" GST_PTR_FORMAT " into %"
++        GST_PTR_FORMAT, caps, result);
++
++    return result;
++
++}
++
++static GstFlowReturn
++gst_d3d11_crop_transform(GstBaseTransform* trans, GstBuffer* inbuf,
++    GstBuffer* outbuf)
++{
++    GstD3D11BaseFilter* filter = GST_D3D11_BASE_FILTER(trans);
++    Gstd3d11crop* crop = GST_D3D11CROP(trans);
++    ID3D11Device* device_handle;
++    ID3D11DeviceContext* context_handle;
++    GstMapInfo in_map[GST_VIDEO_MAX_PLANES];
++    GstMapInfo out_map[GST_VIDEO_MAX_PLANES];
++    GstD3D11Device* device = filter->device;
++
++    if ((crop->need_update == TRUE))
++    {
++
++        gst_base_transform_set_passthrough(trans, FALSE);
++        gst_base_transform_set_in_place   (trans, FALSE);
++        crop->need_update = FALSE;
++
++    }
++
++    {
++      GstD3D11DeviceLockGuard lk(device);
++      device_handle = gst_d3d11_device_get_device_handle(device);
++      context_handle = gst_d3d11_device_get_device_context_handle(device);
++      if (!gst_d3d11_buffer_map(inbuf, device_handle, in_map, GST_MAP_READ)) {
++        goto invalid_memory;
++      }
++
++      if (!gst_d3d11_buffer_map(outbuf, device_handle, out_map, GST_MAP_WRITE)) {
++        gst_d3d11_buffer_unmap(inbuf, in_map);
++        goto invalid_memory;
++      }
++      //gst_d3d11_device_lock(device);
++      for (int i = 0; i < gst_buffer_n_memory(inbuf); i++) {
++        GstD3D11Memory* mem = (GstD3D11Memory*)gst_buffer_peek_memory(outbuf, i);
++        GstD3D11Memory* src_dmem = (GstD3D11Memory*)gst_buffer_peek_memory(inbuf, i);
++
++        guint subidx;
++        D3D11_BOX src_box = { 0, };
++        D3D11_TEXTURE2D_DESC src_desc;
++        D3D11_TEXTURE2D_DESC dst_desc;
++
++        subidx = gst_d3d11_memory_get_subresource_index(mem);
++        gst_d3d11_memory_get_texture_desc(mem, &dst_desc);
++        int x = crop->left;
++        int y = crop->top;
++        int w = (crop->width - crop->right) - (crop->left);//crop->left + crop->right;
++        int h = (crop->height - crop->bottom) - (crop->top);//crop->top  + crop->bottom;
++
++
++        if (i == 0)
++        {
++          src_box.left = x;
++          src_box.top = y;
++          src_box.front = 0;
++          src_box.back = 1;
++          src_box.right = (x + w);//MIN(src_desc.Width, dst_desc.Width);
++          src_box.bottom = (y + h);//MIN(src_desc.Height, dst_desc.Height);
++        }
++        else
++        {
++          src_box.left = (x / 2);
++          src_box.top = (y / 2);
++          src_box.front = 0;
++          src_box.back = 1;
++          src_box.right = ((x + w) / 2);//MIN(src_desc.Width, dst_desc.Width);
++          src_box.bottom = ((y + h) / 2);//MIN(src_desc.Height, dst_desc.Height);
++
++        }
++
++        guint src_subidx = gst_d3d11_memory_get_subresource_index(src_dmem);
++
++        context_handle->CopySubresourceRegion((ID3D11Resource*)out_map[i].data,
++          subidx, 0, 0, 0, (ID3D11Resource*)in_map[i].data, src_subidx, &src_box);
++      }
++      //gst_d3d11_device_unlock(device);
++
++      gst_d3d11_buffer_unmap(inbuf, in_map);
++      gst_d3d11_buffer_unmap(outbuf, out_map);
++    }
++
++    return GST_FLOW_OK;
++
++invalid_memory:
++    {
++        g_print("invalid memory\n");
++        return GST_FLOW_ERROR;
++    }
++
++}
++
++static gboolean
++gst_d3d11_crop_set_info(GstD3D11BaseFilter* filter,
++    GstCaps* incaps, GstVideoInfo* in_info, GstCaps* outcaps,
++    GstVideoInfo* out_info)
++{
++    Gstd3d11crop* self = GST_D3D11CROP(filter);
++    //g_print("@@@@@@@@@@@@@ video RES %d*%d\n", in_info->width, in_info->height);
++    self->width = in_info->width;
++    self->height = in_info->height;
++    return TRUE;
++}
++
++static gboolean
++gst_d3d11_crop_decide_allocation(GstBaseTransform* trans, GstQuery* query)
++{
++    GstD3D11BaseFilter* filter = GST_D3D11_BASE_FILTER(trans);
++    GstCaps* outcaps = NULL;
++    GstBufferPool* pool = NULL;
++    guint size, min, max;
++    GstStructure* config;
++    gboolean update_pool = FALSE;
++    GstVideoInfo vinfo;
++    GstD3D11Format d3d11_format;
++    GstD3D11AllocationParams* d3d11_params;
++    guint bind_flags = 0;
++    guint i;
++    DXGI_FORMAT dxgi_format = DXGI_FORMAT_UNKNOWN;
++    UINT supported = 0;
++    HRESULT hr;
++    ID3D11Device* device_handle;
++
++    gst_query_parse_allocation(query, &outcaps, NULL);
++
++    if (!outcaps)
++        return FALSE;
++
++    gst_video_info_from_caps(&vinfo, outcaps);
++
++    if (!gst_d3d11_device_get_format(filter->device,
++        GST_VIDEO_INFO_FORMAT(&vinfo), &d3d11_format)) {
++        GST_ERROR_OBJECT(filter, "Unknown format caps %" GST_PTR_FORMAT, outcaps);
++        return FALSE;
++    }
++
++    if (d3d11_format.dxgi_format == DXGI_FORMAT_UNKNOWN) {
++        dxgi_format = d3d11_format.resource_format[0];
++    }
++    else {
++        dxgi_format = d3d11_format.dxgi_format;
++    }
++
++    {
++      GstD3D11DeviceLockGuard lk(filter->device);
++      device_handle = gst_d3d11_device_get_device_handle(filter->device);
++      hr = device_handle->CheckFormatSupport(dxgi_format, &supported);
++      if (gst_d3d11_result(hr, filter->device)) {
++        if ((supported & D3D11_FORMAT_SUPPORT_SHADER_SAMPLE) ==
++          D3D11_FORMAT_SUPPORT_SHADER_SAMPLE) {
++          bind_flags |= D3D11_BIND_SHADER_RESOURCE;
++        }
++
++        if ((supported & D3D11_FORMAT_SUPPORT_RENDER_TARGET) ==
++          D3D11_FORMAT_SUPPORT_RENDER_TARGET) {
++          bind_flags |= D3D11_BIND_RENDER_TARGET;
++        }
++      }
++    }
++
++    if (gst_query_get_n_allocation_pools(query) > 0) {
++        gst_query_parse_nth_allocation_pool(query, 0, &pool, &size, &min, &max);
++        if (pool) {
++            if (!GST_IS_D3D11_BUFFER_POOL(pool)) {
++                gst_clear_object(&pool);
++            }
++            else {
++                GstD3D11BufferPool* dpool = GST_D3D11_BUFFER_POOL(pool);
++                if (dpool->device != filter->device)
++                    gst_clear_object(&pool);
++            }
++        }
++
++        update_pool = TRUE;
++    }
++    else {
++        size = GST_VIDEO_INFO_SIZE(&vinfo);
++        min = max = 0;
++    }
++
++    if (!pool) {
++        GST_DEBUG_OBJECT(trans, "create our pool");
++
++        pool = gst_d3d11_buffer_pool_new(filter->device);
++    }
++
++    config = gst_buffer_pool_get_config(pool);
++    gst_buffer_pool_config_add_option(config, GST_BUFFER_POOL_OPTION_VIDEO_META);
++    gst_buffer_pool_config_set_params(config, outcaps, size, min, max);
++
++    d3d11_params = gst_buffer_pool_config_get_d3d11_allocation_params(config);
++    if (!d3d11_params) {
++        d3d11_params = gst_d3d11_allocation_params_new(filter->device, &vinfo,
++            (GstD3D11AllocationFlags)0, bind_flags,0);
++    }
++    else {
++        /* Set bind flag */
++        for (i = 0; i < GST_VIDEO_INFO_N_PLANES(&vinfo); i++) {
++            d3d11_params->desc[i].BindFlags |= bind_flags;
++        }
++    }
++
++    gst_buffer_pool_config_set_d3d11_allocation_params(config, d3d11_params);
++    gst_d3d11_allocation_params_free(d3d11_params);
++
++    gst_buffer_pool_set_config(pool, config);
++
++    /* d3d11 buffer pool will update buffer size based on allocated texture,
++     * get size from config again */
++    config = gst_buffer_pool_get_config(pool);
++    gst_buffer_pool_config_get_params(config, nullptr, &size, nullptr, nullptr);
++    gst_structure_free(config);
++
++    if (update_pool)
++        gst_query_set_nth_allocation_pool(query, 0, pool, size, min, max);
++    else
++        gst_query_add_allocation_pool(query, pool, size, min, max);
++
++    gst_object_unref(pool);
++
++    return GST_BASE_TRANSFORM_CLASS(parent_class)->decide_allocation(trans,
++        query);
++}
++
++/* initialize the new element
++ * instantiate pads and add them to element
++ * set pad callback functions
++ * initialize instance structure
++ */
++static void
++gst_d3d11crop_init (Gstd3d11crop * filter)
++{
++    filter->left   = 0;
++    filter->right  = 0;
++    filter->top    = 0;
++    filter->bottom = 0;
++    filter->need_update = FALSE;
++}
++
++static inline void
++gst_video_crop_set_crop(Gstd3d11crop* filter, gint new_value, gint* prop)
++{
++    if (*prop != new_value) {
++        //Property needs to be even
++        *prop = new_value - (new_value%2);
++        filter->need_update = TRUE;
++    }
++}
++
++static void
++gst_d3d11crop_set_property (GObject * object, guint prop_id,
++    const GValue * value, GParamSpec * pspec)
++{
++  Gstd3d11crop *filter = GST_D3D11CROP (object);
++
++  switch (prop_id) {
++    case PROP_SILENT:
++      filter->silent = g_value_get_boolean (value);
++      break;
++    case PROP_LEFT:
++      gst_video_crop_set_crop(filter, g_value_get_int(value),
++            &filter->left);
++        break;
++    case PROP_RIGHT:
++        gst_video_crop_set_crop(filter, g_value_get_int(value),
++            &filter->right);
++        break;
++    case PROP_TOP:
++        gst_video_crop_set_crop(filter, g_value_get_int(value),
++            &filter->top);
++        break;
++    case PROP_BOTTOM:
++        gst_video_crop_set_crop(filter, g_value_get_int(value),
++            &filter->bottom);
++        break;
++    default:
++      G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
++      break;
++  }
++  gst_base_transform_reconfigure_src(GST_BASE_TRANSFORM(filter));
++}
++
++static void
++gst_d3d11crop_get_property (GObject * object, guint prop_id,
++    GValue * value, GParamSpec * pspec)
++{
++  Gstd3d11crop *filter = GST_D3D11CROP (object);
++
++  switch (prop_id) {
++    case PROP_SILENT:
++      g_value_set_boolean (value, filter->silent);
++      break;
++    case PROP_LEFT:
++        g_value_set_int(value, filter->left);
++        break;
++    case PROP_RIGHT:
++        g_value_set_int(value, filter->right);        
++        break;
++    case PROP_TOP:
++        g_value_set_int(value, filter->top);
++        break;
++    case PROP_BOTTOM:
++        g_value_set_int(value, filter->bottom);
++        break;
++    default:
++      G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
++      break;
++  }
++}
++
++/* GstElement vmethod implementations */
++
++/* this function handles sink events */
++static gboolean
++gst_d3d11crop_sink_event (GstPad * pad, GstObject * parent,
++    GstEvent * event)
++{
++  Gstd3d11crop *filter;
++  gboolean ret;
++
++  filter = GST_D3D11CROP (parent);
++
++  GST_LOG_OBJECT (filter, "Received %s event: %" GST_PTR_FORMAT,
++      GST_EVENT_TYPE_NAME (event), event);
++
++  switch (GST_EVENT_TYPE (event)) {
++    case GST_EVENT_CAPS:
++    {
++      GstCaps *caps;
++
++      gst_event_parse_caps (event, &caps);
++      /* do something with the caps */
++
++      /* and forward */
++      ret = gst_pad_event_default (pad, parent, event);
++      break;
++    }
++    default:
++      ret = gst_pad_event_default (pad, parent, event);
++      break;
++  }
++  return ret;
++}
++
+diff --git a/subprojects/gst-plugins-bad/sys/d3d11/gstd3d11crop.h b/subprojects/gst-plugins-bad/sys/d3d11/gstd3d11crop.h
+new file mode 100644
+index 0000000000..929316f503
+--- /dev/null
++++ b/subprojects/gst-plugins-bad/sys/d3d11/gstd3d11crop.h
+@@ -0,0 +1,81 @@
++/*
++ * GStreamer
++ * Copyright (C) 2005 Thomas Vander Stichele <thomas@apestaart.org>
++ * Copyright (C) 2005 Ronald S. Bultje <rbultje@ronald.bitfreak.net>
++ * Copyright (C) 2020 Niels De Graef <niels.degraef@gmail.com>
++ * Copyright (C) 2022  <<user@hostname.org>>
++ * 
++ * Permission is hereby granted, free of charge, to any person obtaining a
++ * copy of this software and associated documentation files (the "Software"),
++ * to deal in the Software without restriction, including without limitation
++ * the rights to use, copy, modify, merge, publish, distribute, sublicense,
++ * and/or sell copies of the Software, and to permit persons to whom the
++ * Software is furnished to do so, subject to the following conditions:
++ *
++ * The above copyright notice and this permission notice shall be included in
++ * all copies or substantial portions of the Software.
++ *
++ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
++ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
++ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
++ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
++ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
++ * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
++ * DEALINGS IN THE SOFTWARE.
++ *
++ * Alternatively, the contents of this file may be used under the
++ * GNU Lesser General Public License Version 2.1 (the "LGPL"), in
++ * which case the following provisions apply instead of the ones
++ * mentioned above:
++ *
++ * This library is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU Library General Public
++ * License as published by the Free Software Foundation; either
++ * version 2 of the License, or (at your option) any later version.
++ *
++ * This library is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * Library General Public License for more details.
++ *
++ * You should have received a copy of the GNU Library General Public
++ * License along with this library; if not, write to the
++ * Free Software Foundation, Inc., 59 Temple Place - Suite 330,
++ * Boston, MA 02111-1307, USA.
++ */
++
++#ifndef __GST_D3D11CROP_H__
++#define __GST_D3D11CROP_H__
++#include "gstd3d11basefilter.h"
++#include <gst/gst.h>
++#include <gst/d3d11/gstd3d11memory-private.h>
++
++G_BEGIN_DECLS
++
++#define GST_TYPE_D3D11CROP (gst_d3d11crop_get_type())
++G_DECLARE_FINAL_TYPE (Gstd3d11crop, gst_d3d11crop,
++    GST, D3D11CROP, GstD3D11BaseFilter)
++
++struct _Gstd3d11crop
++{
++  GstD3D11BaseFilter parent;
++  GstBuffer* staging_buffer;
++#if 0  
++  GstElement element;
++
++  GstPad *sinkpad, *srcpad;
++#endif
++  gboolean silent;
++  gint  left;
++  gint  right;
++  gint  bottom;
++  gint  top;
++  gboolean need_update;
++  gint  width;
++  gint  height;
++
++};
++
++G_END_DECLS
++
++#endif /* __GST_D3D11CROP_H__ */
+diff --git a/subprojects/gst-plugins-bad/sys/d3d11/gstd3d11d2d1.cpp b/subprojects/gst-plugins-bad/sys/d3d11/gstd3d11d2d1.cpp
+new file mode 100644
+index 0000000000..fd881ff9ca
+--- /dev/null
++++ b/subprojects/gst-plugins-bad/sys/d3d11/gstd3d11d2d1.cpp
+@@ -0,0 +1,380 @@
++/*
++ * GStreamer
++ * Copyright (C) 2023 Aleksandr Slobodeniuk <aslobodeniuk@fluendo.com>
++ *                    Marek Olejnik <molejnik@fluendo.com>
++ * 
++ * Permission is hereby granted, free of charge, to any person obtaining a
++ * copy of this software and associated documentation files (the "Software"),
++ * to deal in the Software without restriction, including without limitation
++ * the rights to use, copy, modify, merge, publish, distribute, sublicense,
++ * and/or sell copies of the Software, and to permit persons to whom the
++ * Software is furnished to do so, subject to the following conditions:
++ *
++ * The above copyright notice and this permission notice shall be included in
++ * all copies or substantial portions of the Software.
++ *
++ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
++ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
++ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
++ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
++ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
++ * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
++ * DEALINGS IN THE SOFTWARE.
++ *
++ * Alternatively, the contents of this file may be used under the
++ * GNU Lesser General Public License Version 2.1 (the "LGPL"), in
++ * which case the following provisions apply instead of the ones
++ * mentioned above:
++ *
++ * This library is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU Library General Public
++ * License as published by the Free Software Foundation; either
++ * version 2 of the License, or (at your option) any later version.
++ *
++ * This library is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * Library General Public License for more details.
++ *
++ * You should have received a copy of the GNU Library General Public
++ * License along with this library; if not, write to the
++ * Free Software Foundation, Inc., 59 Temple Place - Suite 330,
++ * Boston, MA 02111-1307, USA.
++ */
++
++/**
++ * SECTION:element-d3d11d2d1
++ *
++ * FIXME:Describe d3d11d2d1 here.
++ *
++ * <refsect2>
++ * <title>Example launch line</title>
++ * |[
++ * 
++ * ]|
++ * </refsect2>
++ */
++
++#ifdef HAVE_CONFIG_H
++#  include <config.h>
++#endif
++
++#include <gst/gst.h>
++#include <d2d1.h>
++#include "gstd3d11d2d1.h"
++/* Filter signals and args */
++enum
++{
++    SIGNAL_DRAW = 0,
++    SIGNAL_LAST,
++};
++static guint gst_d3d11_d2d1_signals[SIGNAL_LAST] = { 0 };
++
++enum
++{
++  PROP_0,
++  PROP_ENABLED,
++};
++
++#define GST_D3D11_D2D1_SUPPORTED_FORMATS "{ BGRA, RGBA, BGRx, RGBx }"
++
++/* the capabilities of the inputs and outputs.
++ *
++ * describe the real formats here.
++ */
++static GstStaticCaps sink_template_caps =
++GST_STATIC_CAPS(GST_VIDEO_CAPS_MAKE_WITH_FEATURES(GST_CAPS_FEATURE_MEMORY_D3D11_MEMORY,
++    GST_D3D11_D2D1_SUPPORTED_FORMATS));
++
++static GstStaticCaps src_template_caps =
++GST_STATIC_CAPS(GST_VIDEO_CAPS_MAKE_WITH_FEATURES(GST_CAPS_FEATURE_MEMORY_D3D11_MEMORY,
++    GST_D3D11_D2D1_SUPPORTED_FORMATS));
++
++#define gst_d3d11_d2d1_parent_class parent_class
++G_DEFINE_TYPE (Gstd3d11d2d1, gst_d3d11_d2d1, GST_TYPE_D3D11_BASE_FILTER);
++
++GST_ELEMENT_REGISTER_DEFINE (d3d11_d2d1, "d3d11d2d1", GST_RANK_NONE,
++    GST_TYPE_D3D11D2D1);
++
++GST_DEBUG_CATEGORY_EXTERN(gst_d3d11_d2d1_debug);
++#define GST_CAT_DEFAULT gst_d3d11_d2d1_debug
++
++static void gst_d3d11_d2d1_set_property (GObject * object,
++    guint prop_id, const GValue * value, GParamSpec * pspec);
++static void gst_d3d11_d2d1_get_property (GObject * object,
++    guint prop_id, GValue * value, GParamSpec * pspec);
++
++static gboolean
++gst_d3d11_d2d1_decide_allocation(GstBaseTransform* trans, GstQuery* query);
++
++static GstFlowReturn
++gst_d3d11_d2d1_transform_ip (GstBaseTransform * trans, GstBuffer * buf);
++
++/* GObject vmethod implementations */
++
++/* initialize the d3d11d2d1's class */
++static void
++gst_d3d11_d2d1_class_init (Gstd3d11d2d1Class * klass)
++{
++  GObjectClass *gobject_class;
++  GstElementClass *gstelement_class;
++  GstBaseTransformClass* trans_class = GST_BASE_TRANSFORM_CLASS(klass);
++  GstCaps* caps;
++
++  gobject_class = (GObjectClass *) klass;
++  gstelement_class = (GstElementClass *) klass;
++
++  gobject_class->set_property = gst_d3d11_d2d1_set_property;
++  gobject_class->get_property = gst_d3d11_d2d1_get_property;
++
++  g_object_class_install_property (gobject_class, PROP_ENABLED,
++      g_param_spec_boolean ("enabled", "Enabled", "Emit 'draw' signal",
++          FALSE, G_PARAM_READWRITE));
++
++  caps = gst_d3d11_get_updated_template_caps(&sink_template_caps);
++  gst_element_class_add_pad_template(gstelement_class,
++      gst_pad_template_new("sink", GST_PAD_SINK, GST_PAD_ALWAYS, caps));
++  gst_caps_unref(caps);
++
++  caps = gst_d3d11_get_updated_template_caps(&src_template_caps);
++  gst_element_class_add_pad_template(gstelement_class,
++      gst_pad_template_new("src", GST_PAD_SRC, GST_PAD_ALWAYS, caps));
++  gst_caps_unref(caps);
++
++  gst_element_class_set_details_simple (gstelement_class,
++      "d3d11d2d1",
++      "Drawing with Direct2D on top of the video",
++      "Filter/Video/Hardware",
++	  "Aleksandr Slobodeniuk <aslobodeniuk@fluendo.com>, "
++	  "Marek Olejnik <molejnik@fluendo.com>");
++
++  trans_class->decide_allocation =
++      GST_DEBUG_FUNCPTR(gst_d3d11_d2d1_decide_allocation);
++  trans_class->transform_ip = GST_DEBUG_FUNCPTR(gst_d3d11_d2d1_transform_ip);
++  trans_class->passthrough_on_same_caps = FALSE;
++
++  gst_d3d11_d2d1_signals[SIGNAL_DRAW] =
++      g_signal_new("draw", G_TYPE_FROM_CLASS(klass),
++          G_SIGNAL_RUN_FIRST, 0, NULL, NULL, NULL, G_TYPE_NONE, 2,
++          G_TYPE_POINTER, G_TYPE_UINT64);
++}
++
++static GstFlowReturn
++gst_d3d11_d2d1_transform_ip (GstBaseTransform * trans, GstBuffer * buf)
++{
++  GstD3D11BaseFilter* filter = GST_D3D11_BASE_FILTER(trans);
++  GstD3D11Memory *dmem;
++  GstMemory *mem;
++  HRESULT hr;
++  ID2D1RenderTarget* render_target;
++
++  mem = gst_buffer_peek_memory (buf, 0);
++  if (!gst_is_d3d11_memory (mem)) {
++    GST_ERROR_OBJECT (filter, "Not a d3d11 memory");
++    return GST_FLOW_ERROR;
++  }
++
++  dmem = GST_D3D11_MEMORY_CAST (mem);
++  GstD3D11DeviceLockGuard lk (filter->device);
++  static ID2D1Factory* direct2DFactory;
++  if (!direct2DFactory) {
++    hr = D2D1CreateFactory(D2D1_FACTORY_TYPE_MULTI_THREADED,
++			   &direct2DFactory);
++    
++    if (!gst_d3d11_result(hr, filter->device)) {
++      GST_ERROR_OBJECT (filter,
++	  "Could not create ID2D1Factory, hr: 0x%x", (guint)hr);
++      return GST_FLOW_ERROR;
++    }
++  }
++
++  render_target = gst_d3d11_memory_get_d2d1_render_target(dmem, direct2DFactory);
++  if (render_target == NULL) {
++    GST_ERROR_OBJECT(filter,
++	"Could not get ID2D1RenderTarget from d3d11memory");
++    return GST_FLOW_ERROR;
++  }
++
++  GST_DEBUG_OBJECT(filter, "Emit signal to the user");
++  g_signal_emit(filter, gst_d3d11_d2d1_signals[SIGNAL_DRAW], 0, render_target, GST_BUFFER_PTS (buf));
++
++  return GST_FLOW_OK;
++}
++
++static gboolean
++gst_d3d11_d2d1_decide_allocation(GstBaseTransform* trans, GstQuery* query)
++{
++    GstD3D11BaseFilter* filter = GST_D3D11_BASE_FILTER(trans);
++    GstCaps* outcaps = NULL;
++    GstBufferPool* pool = NULL;
++    guint size, min, max;
++    GstStructure* config;
++    GstVideoInfo vinfo;
++    GstD3D11Format d3d11_format;
++    GstD3D11AllocationParams* d3d11_params;
++    const guint bind_flags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET;
++    DXGI_FORMAT dxgi_format = DXGI_FORMAT_UNKNOWN;
++    UINT supported = 0;
++    HRESULT hr;
++    ID3D11Device* device_handle;
++
++    gst_query_parse_allocation(query, &outcaps, NULL);
++
++    GST_DEBUG_OBJECT(filter, "Decide allocation for caps %" GST_PTR_FORMAT, outcaps);
++
++    if (!outcaps)
++        return FALSE;
++
++    gst_video_info_from_caps(&vinfo, outcaps);
++
++    if (GST_VIDEO_INFO_N_PLANES(&vinfo) != 1) {
++        GST_DEBUG_OBJECT(filter, "Unexpected number of planes (%d)",
++            GST_VIDEO_INFO_N_PLANES(&vinfo));
++        return FALSE;
++    }
++
++    if (!gst_d3d11_device_get_format(filter->device,
++        GST_VIDEO_INFO_FORMAT(&vinfo), &d3d11_format)) {
++        GST_ERROR_OBJECT(filter, "Unknown format caps %" GST_PTR_FORMAT, outcaps);
++        return FALSE;
++    }
++
++    if (d3d11_format.dxgi_format == DXGI_FORMAT_UNKNOWN) {
++        dxgi_format = d3d11_format.resource_format[0];
++    }
++    else {
++        dxgi_format = d3d11_format.dxgi_format;
++    }
++
++    {
++      GstD3D11DeviceLockGuard lk(filter->device);
++      device_handle = gst_d3d11_device_get_device_handle(filter->device);
++
++      hr = device_handle->CheckFormatSupport(dxgi_format, &supported);
++    }
++    if (gst_d3d11_result(hr, filter->device)) {
++        if ((supported & D3D11_FORMAT_SUPPORT_SHADER_SAMPLE) !=
++            D3D11_FORMAT_SUPPORT_SHADER_SAMPLE) {
++            GST_ERROR_OBJECT(filter, "Device doesn't support shader sample texture binding format");
++            return FALSE;
++        }
++
++        if ((supported & D3D11_FORMAT_SUPPORT_RENDER_TARGET) !=
++            D3D11_FORMAT_SUPPORT_RENDER_TARGET) {
++            GST_ERROR_OBJECT(filter, "Device doesn't support render target texture binding format");
++            return FALSE;
++        }
++    }
++
++    guint n_pools = gst_query_get_n_allocation_pools(query);
++    GST_DEBUG_OBJECT(filter, "Downstream proposed %d pools", n_pools);
++    for (guint p = 0; p < n_pools; p++) {
++        gboolean use_proposed_pool = FALSE;
++        gst_query_parse_nth_allocation_pool(query, p, &pool, &size, &min, &max);
++
++        if (pool && GST_IS_D3D11_BUFFER_POOL(pool) &&
++            GST_D3D11_BUFFER_POOL(pool)->device == filter->device) {
++            GstStructure* config;
++            GstD3D11AllocationParams* d3d11_params;
++
++            config = gst_buffer_pool_get_config(pool);
++            d3d11_params = gst_buffer_pool_config_get_d3d11_allocation_params(config);
++
++            use_proposed_pool = ((d3d11_params->desc[0].BindFlags & bind_flags) == bind_flags);
++            GST_DEBUG_OBJECT(filter, "Bind flags (%u) are %scompatible to required ones (%u)",
++                d3d11_params->desc[0].BindFlags, use_proposed_pool ? "" : "not ", bind_flags);
++
++            gst_structure_free(config);
++            gst_d3d11_allocation_params_free(d3d11_params);
++        }
++
++        if (use_proposed_pool) {
++            GST_DEBUG_OBJECT(filter, "Proposed pool %d is going to be used", p);
++            gst_query_set_nth_allocation_pool(query, 0, pool, size, min, max);
++            gst_object_unref(pool);
++            return GST_BASE_TRANSFORM_CLASS(parent_class)->decide_allocation(trans,
++                query);
++        }
++
++        gst_clear_object(&pool);
++    }
++
++    size = GST_VIDEO_INFO_SIZE(&vinfo);
++    min = max = 0;
++
++    GST_DEBUG_OBJECT(filter, "Creating a new buffer pool");
++    pool = gst_d3d11_buffer_pool_new(filter->device);
++
++    config = gst_buffer_pool_get_config(pool);
++    gst_buffer_pool_config_add_option(config, GST_BUFFER_POOL_OPTION_VIDEO_META);
++    gst_buffer_pool_config_set_params(config, outcaps, size, min, max);
++
++    g_warn_if_fail (NULL ==
++        gst_buffer_pool_config_get_d3d11_allocation_params(config));
++
++    d3d11_params = gst_d3d11_allocation_params_new(filter->device, &vinfo,
++            (GstD3D11AllocationFlags)0, bind_flags,0);
++
++    gst_buffer_pool_config_set_d3d11_allocation_params(config, d3d11_params);
++    gst_d3d11_allocation_params_free(d3d11_params);
++
++    gst_buffer_pool_set_config(pool, config);
++
++    /* d3d11 buffer pool will update buffer size based on allocated texture,
++     * get size from config again */
++    config = gst_buffer_pool_get_config(pool);
++    gst_buffer_pool_config_get_params(config, NULL, &size, NULL, NULL);
++    gst_structure_free(config);
++
++    if (n_pools)
++        gst_query_set_nth_allocation_pool(query, 0, pool, size, min, max);
++    else
++        gst_query_add_allocation_pool(query, pool, size, min, max);
++
++    gst_object_unref(pool);
++    return GST_BASE_TRANSFORM_CLASS(parent_class)->decide_allocation(trans,
++        query);
++}
++
++static void
++gst_d3d11_d2d1_init (Gstd3d11d2d1 * d2d1)
++{
++    d2d1->enabled = FALSE;
++    gst_base_transform_set_passthrough(GST_BASE_TRANSFORM(d2d1), !d2d1->enabled);
++    gst_base_transform_set_in_place(GST_BASE_TRANSFORM(d2d1), TRUE);
++}
++
++static void
++gst_d3d11_d2d1_set_property (GObject * object, guint prop_id,
++    const GValue * value, GParamSpec * pspec)
++{
++  Gstd3d11d2d1 *d2d1 = GST_D3D11D2D1 (object);
++
++  switch (prop_id) {
++    case PROP_ENABLED:
++      d2d1->enabled = g_value_get_boolean (value);
++      gst_base_transform_set_passthrough(GST_BASE_TRANSFORM(d2d1), !d2d1->enabled);
++      GST_INFO_OBJECT(d2d1, "Drawing is %s", d2d1->enabled ? "enabled" : "disabled");
++      gst_base_transform_reconfigure_src(GST_BASE_TRANSFORM(d2d1));
++      break;
++    default:
++      G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
++      break;
++  }
++}
++
++static void
++gst_d3d11_d2d1_get_property (GObject * object, guint prop_id,
++    GValue * value, GParamSpec * pspec)
++{
++  Gstd3d11d2d1 *d2d1 = GST_D3D11D2D1 (object);
++
++  switch (prop_id) {
++    case PROP_ENABLED:
++      g_value_set_boolean (value, d2d1->enabled);
++      break;
++    default:
++      G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
++      break;
++  }
++}
+diff --git a/subprojects/gst-plugins-bad/sys/d3d11/gstd3d11d2d1.h b/subprojects/gst-plugins-bad/sys/d3d11/gstd3d11d2d1.h
+new file mode 100644
+index 0000000000..179c918a5c
+--- /dev/null
++++ b/subprojects/gst-plugins-bad/sys/d3d11/gstd3d11d2d1.h
+@@ -0,0 +1,66 @@
++/*
++ * GStreamer
++ * Copyright (C) 2023 Aleksandr Slobodeniuk <aslobodeniuk@fluendo.com>
++ *                    Marek Olejnik <molejnik@fluendo.com>
++ * 
++ * Permission is hereby granted, free of charge, to any person obtaining a
++ * copy of this software and associated documentation files (the "Software"),
++ * to deal in the Software without restriction, including without limitation
++ * the rights to use, copy, modify, merge, publish, distribute, sublicense,
++ * and/or sell copies of the Software, and to permit persons to whom the
++ * Software is furnished to do so, subject to the following conditions:
++ *
++ * The above copyright notice and this permission notice shall be included in
++ * all copies or substantial portions of the Software.
++ *
++ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
++ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
++ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
++ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
++ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
++ * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
++ * DEALINGS IN THE SOFTWARE.
++ *
++ * Alternatively, the contents of this file may be used under the
++ * GNU Lesser General Public License Version 2.1 (the "LGPL"), in
++ * which case the following provisions apply instead of the ones
++ * mentioned above:
++ *
++ * This library is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU Library General Public
++ * License as published by the Free Software Foundation; either
++ * version 2 of the License, or (at your option) any later version.
++ *
++ * This library is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * Library General Public License for more details.
++ *
++ * You should have received a copy of the GNU Library General Public
++ * License along with this library; if not, write to the
++ * Free Software Foundation, Inc., 59 Temple Place - Suite 330,
++ * Boston, MA 02111-1307, USA.
++ */
++
++
++#ifndef __GST_D3D11D2D1_H__
++#define __GST_D3D11D2D1_H__
++#include "gstd3d11basefilter.h"
++#include <gst/gst.h>
++#include <gst/d3d11/gstd3d11memory-private.h>
++
++G_BEGIN_DECLS
++
++#define GST_TYPE_D3D11D2D1 (gst_d3d11_d2d1_get_type())
++G_DECLARE_FINAL_TYPE (Gstd3d11d2d1, gst_d3d11_d2d1,
++    GST, D3D11D2D1, GstD3D11BaseFilter)
++
++struct _Gstd3d11d2d1
++{
++  GstD3D11BaseFilter parent;
++  gboolean enabled;
++};
++
++G_END_DECLS
++
++#endif /* __GST_D3D11D2D1_H__ */
+diff --git a/subprojects/gst-plugins-bad/sys/d3d11/meson.build b/subprojects/gst-plugins-bad/sys/d3d11/meson.build
+index 2859ea3ea5..cf3931ebd7 100644
+--- a/subprojects/gst-plugins-bad/sys/d3d11/meson.build
++++ b/subprojects/gst-plugins-bad/sys/d3d11/meson.build
+@@ -3,6 +3,7 @@ d3d11_sources = [
+   'gstd3d11basefilter.cpp',
+   'gstd3d11compositor.cpp',
+   'gstd3d11convert.cpp',
++  'gstd3d11crop.cpp',
+   'gstd3d11decoder.cpp',
+   'gstd3d11deinterlace.cpp',
+   'gstd3d11download.cpp',
+@@ -106,6 +107,14 @@ if not gstd3d11_dep.found() or not gstdxva_dep.found()
+   subdir_done()
+ endif
+ 
++d2d1_lib = cc.find_library('d2d1', required: false)
++if cc.has_header('d2d1.h') and d2d1_lib.found()
++  extra_dep += [d2d1_lib]
++  d3d11_sources += ['gstd3d11d2d1.cpp']
++  extra_args += ['-DHAVE_D2D1']
++endif
++
++d3dcompiler_lib = cc.find_library('d3dcompiler', required: d3d11_option)
+ runtimeobject_lib = cc.find_library('runtimeobject', required : false)
+ winmm_lib = cc.find_library('winmm', required: false)
+ 
+@@ -152,8 +161,11 @@ endif
+ if d3d11_winapi_app
+   d3d11_sources += winapi_app_sources
+   extra_dep += [runtimeobject_lib]
++
+   if cc.get_id() == 'msvc' and get_option('b_sanitize') == 'address'
+-    extra_args += ['/bigobj']
++     # When building with sanitizer it gives next error:
++     # gstd3d11window_corewindow.cpp : fatal error C1128: number of sections exceeded object file format limit: compile with /bigobj
++     extra_args += ['/bigobj']
+   endif
+ endif
+ 
+diff --git a/subprojects/gst-plugins-bad/sys/d3d11/plugin.cpp b/subprojects/gst-plugins-bad/sys/d3d11/plugin.cpp
+index ab5d4d291e..27701bba07 100644
+--- a/subprojects/gst-plugins-bad/sys/d3d11/plugin.cpp
++++ b/subprojects/gst-plugins-bad/sys/d3d11/plugin.cpp
+@@ -67,6 +67,7 @@
+ #include "gstd3d11download.h"
+ #include "gstd3d11convert.h"
+ #include "gstd3d11compositor.h"
++#include "gstd3d11crop.h"
+ #include "gstd3d11h264dec.h"
+ #include "gstd3d11h265dec.h"
+ #include "gstd3d11vp9dec.h"
+@@ -91,6 +92,10 @@
+ using namespace Microsoft::WRL;
+ /* *INDENT-ON* */
+ 
++#ifdef HAVE_D2D1
++#include "gstd3d11d2d1.h"
++#endif
++
+ GST_DEBUG_CATEGORY (gst_d3d11_debug);
+ GST_DEBUG_CATEGORY (gst_d3d11_plugin_utils_debug);
+ GST_DEBUG_CATEGORY (gst_d3d11_format_debug);
+@@ -98,6 +103,7 @@ GST_DEBUG_CATEGORY (gst_d3d11_device_debug);
+ GST_DEBUG_CATEGORY (gst_d3d11_overlay_compositor_debug);
+ GST_DEBUG_CATEGORY (gst_d3d11_window_debug);
+ GST_DEBUG_CATEGORY (gst_d3d11_video_processor_debug);
++GST_DEBUG_CATEGORY (gst_d3d11_crop_debug);
+ GST_DEBUG_CATEGORY (gst_d3d11_decoder_debug);
+ GST_DEBUG_CATEGORY (gst_d3d11_h264_dec_debug);
+ GST_DEBUG_CATEGORY (gst_d3d11_h265_dec_debug);
+@@ -112,6 +118,12 @@ GST_DEBUG_CATEGORY (gst_d3d11_screen_capture_debug);
+ GST_DEBUG_CATEGORY (gst_d3d11_screen_capture_device_debug);
+ #endif
+ 
++
++
++#ifdef HAVE_D2D1
++GST_DEBUG_CATEGORY(gst_d3d11_d2d1_debug);
++#endif
++
+ #define GST_CAT_DEFAULT gst_d3d11_debug
+ 
+ static void
+@@ -129,6 +141,8 @@ plugin_init (GstPlugin * plugin)
+   ComPtr < IDXGIFactory1 > factory;
+ 
+   GST_DEBUG_CATEGORY_INIT (gst_d3d11_debug, "d3d11", 0, "direct3d 11 plugin");
++  GST_DEBUG_CATEGORY_INIT(gst_d3d11_crop_debug,
++      "d3d11crop", 0, "d3d11crop");
+   GST_DEBUG_CATEGORY_INIT (gst_d3d11_plugin_utils_debug,
+       "d3d11pluginutils", 0, "d3d11 plugin utility functions");
+   GST_DEBUG_CATEGORY_INIT (gst_d3d11_overlay_compositor_debug,
+@@ -167,6 +181,11 @@ plugin_init (GstPlugin * plugin)
+   if (FAILED (hr))
+     return TRUE;
+ 
++#ifdef HAVE_D2D1
++  GST_DEBUG_CATEGORY_INIT(gst_d3d11_d2d1_debug,
++      "d3d11d2d1", 0, "d3d11d2d1 element");
++#endif
++
+   /* Enumerate devices to register decoders per device and to get the highest
+    * feature level */
+   for (guint i = 0;; i++) {
+@@ -230,6 +249,8 @@ plugin_init (GstPlugin * plugin)
+       "d3d11colorconvert", GST_RANK_NONE, GST_TYPE_D3D11_COLOR_CONVERT);
+   gst_element_register (plugin,
+       "d3d11scale", GST_RANK_NONE, GST_TYPE_D3D11_SCALE);
++  gst_element_register(plugin,
++      "d3d11crop", GST_RANK_NONE, GST_TYPE_D3D11CROP);
+   gst_element_register (plugin,
+       "d3d11videosink", video_sink_rank, GST_TYPE_D3D11_VIDEO_SINK);
+ 
+@@ -264,6 +285,11 @@ plugin_init (GstPlugin * plugin)
+       "plugin-d3d11-shutdown", (gpointer) "shutdown-data",
+       (GDestroyNotify) plugin_deinit);
+ 
++#ifdef HAVE_D2D1
++  gst_element_register(plugin,
++      "d3d11d2d1", GST_RANK_NONE, GST_TYPE_D3D11D2D1);
++#endif
++
+   return TRUE;
+ }
+ 
+-- 
+2.40.1.windows.1
+

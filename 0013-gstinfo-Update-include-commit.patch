@@ -1,0 +1,57 @@
+From 8378d613aa71440c504ff91d53786ac591688ea6 Mon Sep 17 00:00:00 2001
+From: smomin7 <smomin@vicon-security.com>
+Date: Wed, 2 Apr 2025 21:31:41 +0530
+Subject: [PATCH 13/18] gstinfo : Update include commit commit: 616c59a *
+ [d87363b bhagirathimohanta]WTC-1213-Debug-Crash
+
+commit: c0e4399
+* [cc40516 bhagirathimohanta]WTC-1213
+
+commit: 364a300
+* docs: Use backticks to escape * in markdown
+
+Otherwise it's interpreted as emphasis.
+
+Part-of: <https://gitlab.freedesktop.org/gstreamer/gstreamer/-/merge_requests/4763>
+---
+ subprojects/gstreamer/gst/gstinfo.c | 9 +++++----
+ 1 file changed, 5 insertions(+), 4 deletions(-)
+
+diff --git a/subprojects/gstreamer/gst/gstinfo.c b/subprojects/gstreamer/gst/gstinfo.c
+index 47df87c303..3a7dfec118 100644
+--- a/subprojects/gstreamer/gst/gstinfo.c
++++ b/subprojects/gstreamer/gst/gstinfo.c
+@@ -388,7 +388,7 @@ void
+ _priv_gst_debug_init (void)
+ {
+   const gchar *env;
+-  FILE *log_file;
++  FILE *log_file = NULL;
+ 
+   if (add_default_log_func) {
+     env = g_getenv ("GST_DEBUG_FILE");
+@@ -616,9 +616,8 @@ gst_debug_log_full_valist (GstDebugCategory * category, GstDebugLevel level,
+ 
+   g_rw_lock_reader_lock (&__log_func_mutex);
+   handler = __log_functions;
+-  while (handler) {
++  if (handler) {
+     entry = handler->data;
+-    handler = g_slist_next (handler);
+     entry->func (category, level, file, function, line, object, &message,
+         entry->user_data);
+   }
+@@ -1803,7 +1802,9 @@ gst_debug_remove_with_compare_func (GCompareFunc func, gpointer data)
+ 
+     if (entry->notify)
+       entry->notify (entry->user_data);
+-
++    if ((entry->user_data != stderr) && (entry->user_data != stdout)) {
++      fclose (entry->user_data);
++    }
+     g_free (entry);
+     cleanup = g_slist_delete_link (cleanup, cleanup);
+   }
+-- 
+2.40.1.windows.1
+

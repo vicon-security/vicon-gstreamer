@@ -1,0 +1,1545 @@
+From 7b620e5f30af1f3a2b1e08f07ebeb30968dbb7a2 Mon Sep 17 00:00:00 2001
+From: smomin7 <smomin@vicon-security.com>
+Date: Thu, 27 Mar 2025 14:30:00 +0530
+Subject: [PATCH 02/18] Added vicondewarp plugin which uses immervision lib.
+
+---
+ subprojects/gst-plugins-bad/cemtrex/IMV1.h    | 285 +++++++
+ subprojects/gst-plugins-bad/cemtrex/config.h  |  18 +
+ .../cemtrex/gstvicondewarp.cpp                | 696 ++++++++++++++++++
+ .../gst-plugins-bad/cemtrex/gstvicondewarp.h  | 106 +++
+ .../gst-plugins-bad/cemtrex/lib/IMV1.lib      | Bin 0 -> 104974 bytes
+ .../gst-plugins-bad/cemtrex/meson.build       |  24 +
+ subprojects/gst-plugins-bad/meson.build       |   2 +
+ subprojects/gst-plugins-bad/meson_options.txt |   1 +
+ 8 files changed, 1132 insertions(+)
+ create mode 100644 subprojects/gst-plugins-bad/cemtrex/IMV1.h
+ create mode 100644 subprojects/gst-plugins-bad/cemtrex/config.h
+ create mode 100644 subprojects/gst-plugins-bad/cemtrex/gstvicondewarp.cpp
+ create mode 100644 subprojects/gst-plugins-bad/cemtrex/gstvicondewarp.h
+ create mode 100644 subprojects/gst-plugins-bad/cemtrex/lib/IMV1.lib
+ create mode 100644 subprojects/gst-plugins-bad/cemtrex/meson.build
+
+diff --git a/subprojects/gst-plugins-bad/cemtrex/IMV1.h b/subprojects/gst-plugins-bad/cemtrex/IMV1.h
+new file mode 100644
+index 0000000000..28257de8c6
+--- /dev/null
++++ b/subprojects/gst-plugins-bad/cemtrex/IMV1.h
+@@ -0,0 +1,285 @@
++//////////////////////////////////////////////////////////////////
++//																//
++// IMV1.h - header of the IMV1-SDK API							//
++// -----------------------------------							//
++//																//
++// Rev: 2.4.5.1													//
++//																//
++// Copyright 2000-2018 ImmerVision Canada Inc.					//
++//																//
++//////////////////////////////////////////////////////////////////
++
++#ifndef IMV1_LIBRARY_001_H__
++#define IMV1_LIBRARY_001_H__
++
++typedef struct 
++{
++	unsigned long width ;
++	unsigned long height ;
++	unsigned long frameX ;
++	unsigned long frameY ;
++	unsigned long frameWidth ;
++	unsigned long frameHeight ;
++	unsigned char *data ;
++} IMV_Buffer ;
++
++typedef struct{
++	float x;
++	float y;
++} Vertex2D;
++
++typedef struct 
++{
++	char *RPL;
++	char *Name;
++} SLensDescription;
++
++class IMV_Defs
++{
++public :
++	enum
++	{
++		E_RGB_16 = 0,
++		E_RGB_24,
++		E_RGB_32,
++		E_RGB_16_STD,
++		E_RGB_24_STD,
++		E_RGB_32_STD,
++		E_YUV_YV12,
++		E_YUV_IYUV,
++		E_YUV_I420,
++		E_YUV_YV12_STD,
++		E_YUV_IYUV_STD,
++		E_YUV_I420_STD,
++		E_YUV_UYVY,
++		E_YUV_YUYV,
++		E_YUV_YVYU,
++		E_YUV_YUY2,
++		E_YUV_UYVY_STD,
++		E_YUV_YUYV_STD,
++		E_YUV_YVYU_STD,
++		E_YUV_YUY2_STD,
++		E_ARGB_32,
++		E_ARGB_32_STD,
++		E_RGBA_32,
++		E_RGBA_32_STD,
++		E_YUV_NV12,
++		E_YUV_NV12_STD,
++		E_YUV_NV21,
++		E_YUV_NV21_STD,
++		E_BGR_16,
++		E_BGR_24,
++		E_BGR_32,
++		E_BGR_16_STD,
++		E_BGR_24_STD,
++		E_BGR_32_STD,
++		E_ABGR_32,
++		E_ABGR_32_STD,
++		E_BGRA_32,
++		E_BGRA_32_STD,
++	} eColorFormat ;
++
++	enum
++	{
++		E_OBUF_TOPBOTTOM = 256,
++		E_OBUF_BOTTOMUP = 512
++
++	} eOutputBufferOrientation;
++
++	enum
++	{
++		E_VTYPE_PTZ = 0,
++		E_VTYPE_QUAD = 1,
++		E_VTYPE_PERI = 2,
++		E_VTYPE_PERI_CUSTOM = 4,
++		E_VTYPE_VERTICAL_SELFIE = 5,
++		
++		E_VTYPE_ZOOM = 4096 //mask to enable zoom functionality in perimeters view 
++	} eViewType ;
++	
++	enum
++	{
++		E_CPOS_WALL = 0,
++		E_CPOS_CEILING,
++		E_CPOS_GROUND
++	} eCameraPosition ;
++	
++	enum
++	{
++		E_COOR_ABSOLUTE = 0,
++		E_COOR_RELATIVE
++	} eCoordinates ;
++	
++	enum
++	{
++		E_ERR_OK	= 0,
++		E_ERR_OUTOFMEMORY,
++		E_ERR_NOBUFFER,		
++		E_ERR_VTYPEINVALID,
++		E_ERR_CPOSINVALID,
++		E_ERR_COLORINVALID,
++		E_ERR_IBUFINVALID,
++		E_ERR_OBUFINVALID,
++		E_ERR_INDEXINVALID,
++		E_ERR_NOTINITALIZED,
++		E_ERR_NOTPANOMORPH,
++		E_ERR_PARAMINVALID,
++		E_ERR_NOTALLOWED,
++		E_ERR_VERSIONINVALID,
++		E_ERR_QRCODEINVALID,
++		E_ERR_NOPARAMETERS,
++		E_ERR_NAVTYPEINVALID
++	} eErrorCode ;
++	
++	enum
++	{
++		E_WAR_ACS_OK				= 0,
++		E_WAR_ACS_NOTDETECTED		= 1,
++		E_WAR_ACS_CROPPEDLEFT		= 2,
++		E_WAR_ACS_CROPPEDRIGHT		= 4,
++		E_WAR_ACS_CROPPEDTOP		= 8,
++		E_WAR_ACS_CROPPEDBOTTOM		= 16,
++		E_WAR_ACS_NOTCENTERED		= 32,
++		E_WAR_ACS_ROTATED			= 64
++	} eACSStatusCode ;
++	
++	enum
++	{
++		E_FILTER_NONE = 0,
++		E_FILTER_BILINEAR,
++		E_FILTER_BILINEAR_ONSTOP
++	}
++	eFilterType;
++	
++	enum
++	{
++		E_PROJ_LINEAR = 0,
++		E_PROJ_SCENIC
++	}
++	eProjectionType;
++	
++	enum
++	{
++		E_BACK_NONE = 0,
++		E_BACK_LINES,
++	}
++	eBackgroundType;
++	
++	enum
++	{
++		E_NAV_360xFOV_LOCKED = 0, 
++		E_NAV_360x360_STABILIZED, 
++		E_NAV_360x360_STABILIZED_LOCKED
++	} eNavigationType;
++} ;
++
++
++
++class IMV_Camera;
++
++class IMV_CameraInterface
++{
++protected :
++	IMV_Camera* camera;
++
++public :
++	IMV_CameraInterface() ;
++	~IMV_CameraInterface() ;
++	unsigned long CheckCameraType( IMV_Buffer *buffer, unsigned long rgbFormat) ;
++
++	char* GetACS();
++	unsigned long GetACSStatus() ;
++	char* GetACSStatusString(int eACSStatusCode) ;
++	unsigned long GetBackground(unsigned long *backgroundType);	
++	unsigned long GetCameraPosition( unsigned long *cameraPosition) ;
++	unsigned long GetCameraRotation( float *pan, float *tilt, float *roll) ;
++	unsigned long GetDisplayPanLimits( float *panMin, float *panMax);
++	unsigned long GetDisplayTiltLimits( float *tiltMin, float *tiltMax);
++	char* GetErrorString(int eErrorCode);
++	unsigned long GetFiltering( unsigned long *filtering);
++	unsigned long GetMarkersInfo(char* tag, void* value, int* nbBytes);
++	static unsigned long GetMarkersInfo(IMV_Buffer* buf, unsigned long colorFormat,char* tag, void* value, int* nbBytes);
++	unsigned long GetNavigationType( unsigned long *navigationType);
++	unsigned long GetPanLimits( float *panMin, float *panMax);
++	unsigned long GetPosition( float *pan, float *tilt, float *zoom, unsigned long viewIndex = 1);
++	unsigned long GetPosition( float *pan, float *tilt, float *roll, float *zoom, unsigned long viewIndex = 1);
++	unsigned long GetProjectionType(unsigned long *projectionType, float *strength);
++	unsigned long GetTiltLimits( float *tiltMin, float *tiltMax);
++	static const char* GetVersion();
++	unsigned long GetViewType( unsigned long *viewType) ;
++	unsigned long GetZoomLimits( float *zoomMin, float *zoomMax) ;
++	
++	unsigned long RestoreMarkersReading();
++	
++	unsigned long SetACS(char *acs);
++	unsigned long SetBackground(unsigned long backgroundType);
++	unsigned long SetCameraPosition( unsigned long cameraPosition) ;
++	unsigned long SetCameraRotation( float *pan, float *tilt, float *roll) ;
++	unsigned long SetFiltering( unsigned long filtering);
++	unsigned long SetInputVideoParams( IMV_Buffer *inputBuffer) ;
++	unsigned long SetLens(char* RPL);
++	unsigned long SetNavigationType( unsigned long navigationType);
++	unsigned long SetOutputVideoParams( IMV_Buffer *outputBuffer) ;
++	unsigned long SetPanLimits( float panMin, float panMax);
++	unsigned long SetPosition( float *pan, float *tilt, float *zoom, unsigned long coordinates = IMV_Defs::E_COOR_ABSOLUTE, unsigned long viewIndex=1) ;
++	unsigned long SetPosition( float *pan, float *tilt, float *roll, float *zoom, unsigned long coordinates = IMV_Defs::E_COOR_ABSOLUTE, unsigned long viewIndex=1) ;
++	unsigned long SetProjectionType(unsigned long projectionType, float *strength);
++	unsigned long SetTiltLimits( float tiltMin, float tiltMax);
++	unsigned long SetVideoParams( IMV_Buffer *inputBuffer, IMV_Buffer *outputBuffer, unsigned long colorFormat, unsigned long viewType, unsigned long cameraPosition) ;
++	unsigned long SetViewType( unsigned long viewType) ;
++	unsigned long SetZoomLimits( float zoomMin, float zoomMax) ;
++	
++	unsigned long Update() ;
++	
++	unsigned long SetThreadCount(int nbThreads);
++
++	//tracking functions
++	unsigned long GetPositionFromInputVideoPoint(int xInputVideo,int yInputVideo, float *pan, float *tilt);
++	unsigned long GetPositionFromOutputVideoPoint(int xOutputVideo,int yOutputVideo, float *pan, float *tilt);
++
++	unsigned long GetPositionFromInputVideoPolygon(int nbPts, int *xInputVideo,int *yInputVideo, float *pan, float *tilt,float *zoom);
++	unsigned long GetPositionFromOutputVideoPolygon(int nbPts,int *xOutputVideo,int *yOutputVideo, float *pan, float *tilt,float *zoom);
++
++	unsigned long GetPositionFromInputVideoPolygon(int nbPts,int *xInputVideo,int *yInputVideo, int widthDestinationViewer, int heightDestinationViewer, float *pan, float *tilt,float *zoom);
++	unsigned long GetPositionFromOutputVideoPolygon(int nbPts,int *xOutputVideo,int *yOutputVideo, int widthDestinationViewer, int heightDestinationViewer, float *pan, float *tilt,float *zoom);
++
++	unsigned long GetInputVideoPointFromPosition(float pan, float tilt, int *xInputVideo,int *yInputVideo);
++	unsigned long GetOutputVideoPointFromPosition(float pan, float tilt, int *xOutputVideo,int *yOutputVideo, unsigned long viewIndex = 1);
++	
++	unsigned long GetPositionFrom3D(float x,float y,float z, float *pan, float *tilt);
++	unsigned long Get3DFromPosition(float pan, float tilt,float *x,float *y,float *z);
++	//------------------
++	
++	//RectangleSurface functions
++	unsigned long AddRectangleSurface(IMV_Buffer *inputBuffer, int *rectangleSurfaceIndex) ;
++	unsigned long RemoveRectangleSurface(int rectangleSurfaceIndex);
++
++	unsigned long SetRectangleSurfaceInputBuffer(int rectangleSurfaceIndex, IMV_Buffer *inputBuffer) ;
++
++	unsigned long SetRectangleSurfacePosition(int rectangleSurfaceIndex, float pan1,float tilt1,float pan2,float tilt2,float pan3,float tilt3,float pan4,float tilt4);
++	unsigned long SetRectangleSurfacePosition(int rectangleSurfaceIndex, float x1,float y1,float z1,float x2,float y2,float z2,float x3,float y3,float z3,float x4,float y4,float z4);
++
++	unsigned long GetRectangleSurfacePosition(int rectangleSurfaceIndex, float *pan1,float *tilt1,float *pan2,float *tilt2,float *pan3,float *tilt3,float *pan4,float *tilt4);
++	unsigned long GetRectangleSurfacePosition(int rectangleSurfaceIndex, float *x1,float *y1,float *z1,float *x2,float *y2,float *z2,float *x3,float *y3,float *z3,float *x4,float *y4,float *z4);
++
++	unsigned long ShowRectangleSurface(int rectangleSurfaceIndex, bool visible=true);
++	//------------------
++	
++	// Static Methods
++	static int StaticGetLensDescriptionCount();
++	static const SLensDescription* StaticGetLensDescription();
++} ;
++
++class IMV_CameraFlatSurfaceInterface: public IMV_CameraInterface
++{
++public :
++
++	IMV_CameraFlatSurfaceInterface() ;
++		
++	unsigned long GetFlatSurfaceModel(int flatSurfaceIndex, int* nbVertex2D,Vertex2D** v1, Vertex2D **txCoords);
++	unsigned long GetRectangleSurface(int numMesh, int* nbVertex2D, int rectangleSurfaceIndex,Vertex2D** v1, Vertex2D **txCoords);
++} ;
++
++
++#endif
++// EOF
+diff --git a/subprojects/gst-plugins-bad/cemtrex/config.h b/subprojects/gst-plugins-bad/cemtrex/config.h
+new file mode 100644
+index 0000000000..4392d0dea7
+--- /dev/null
++++ b/subprojects/gst-plugins-bad/cemtrex/config.h
+@@ -0,0 +1,18 @@
++/*
++ * Autogenerated by the Meson build system.
++ * Do not edit, your changes will be lost.
++ */
++
++#pragma once
++
++#define GST_API_VERSION "1.0"
++
++#define GST_LICENSE "LGPL"
++
++#define GST_PACKAGE_NAME "GStreamer vicondewarp Plug-ins"
++
++#define GST_PACKAGE_ORIGIN "https://gstreamer.freedesktop.org"
++
++#define PACKAGE "gst-vicondewarp-plugin"
++
++#define PACKAGE_VERSION "1.0.0"
+diff --git a/subprojects/gst-plugins-bad/cemtrex/gstvicondewarp.cpp b/subprojects/gst-plugins-bad/cemtrex/gstvicondewarp.cpp
+new file mode 100644
+index 0000000000..458e1c1e99
+--- /dev/null
++++ b/subprojects/gst-plugins-bad/cemtrex/gstvicondewarp.cpp
+@@ -0,0 +1,696 @@
++/*
++ * Copyright (C) 2022, Fluendo S.A.
++ * support@fluendo.com
++ */
++#include "config.h"
++#include <iostream>
++#include <gst/gst.h>
++#include <gst/video/video-info.h>
++#include <gst/video/video.h>
++#include "gstvicondewarp.h"
++
++GST_DEBUG_CATEGORY_STATIC(gst_vicondewarp_debug);
++#define GST_CAT_DEFAULT gst_vicondewarp_debug
++
++void saveToPNG(const char* fileName, GstCaps* from_caps, GstBuffer* buf)
++{
++	GstMapInfo map_png;
++	auto* snapshot_caps = gst_caps_from_string("image/png");
++	auto* from_sample = gst_sample_new(buf, from_caps, NULL, NULL);
++	auto* to_sample = gst_video_convert_sample(from_sample, snapshot_caps, GST_CLOCK_TIME_NONE, NULL);
++	auto* buffer = gst_sample_get_buffer(to_sample);
++
++	gst_buffer_map(buffer, &map_png, GST_MAP_READ);
++	g_file_set_contents(fileName, (const gchar*)map_png.data, map_png.size, NULL);
++
++	gst_caps_unref(snapshot_caps);
++	gst_sample_unref(from_sample);
++	gst_buffer_unmap(buffer, &map_png);
++	gst_buffer_unref(buffer);
++	gst_sample_unref(to_sample);
++}
++
++bool getCapsInfo(GstCaps* caps, std::string& bufferFormat, int& width, int& height)
++{
++	auto* capsInfo = gst_caps_get_structure(caps, 0);
++	if (capsInfo == nullptr) {
++		return false;
++	}
++
++	bufferFormat = gst_structure_get_string(capsInfo, "format");
++	auto res = gst_structure_get_int(capsInfo, "width", &width);
++	res |= gst_structure_get_int(capsInfo, "height", &height);
++
++#ifdef VICON_DEBUG_LIBRARY
++	std::string strCaps = gst_caps_to_string(caps);
++	GST_DEBUG("Caps: %s", strCaps.c_str());
++#endif
++
++	return res;
++}
++
++auto string2ColorFormat(const std::string& format)
++{
++	auto colorFormat = IMV_Defs::E_YUV_I420_STD;
++
++	if (format == "RGBA")
++	{
++		colorFormat = IMV_Defs::E_RGBA_32_STD;
++	}
++
++	if (format == "NV12")
++	{
++		colorFormat = IMV_Defs::E_YUV_NV12_STD;
++	}
++
++	return colorFormat;
++}
++
++InputOutputBuffers::InputOutputBuffers() :
++	m_in{ new IMV_Buffer() }, m_out{ new IMV_Buffer() }, m_outputBuffer{ nullptr }, m_inputBuffer{ nullptr },
++	m_width{ 0 }, m_height{ 0 }, m_inputMap{ 0 }, m_outputMap{ 0 }
++{
++}
++
++InputOutputBuffers::~InputOutputBuffers()
++{
++	reset();
++}
++
++void InputOutputBuffers::reset()
++{
++	if (m_outputBuffer != nullptr)
++	{
++    gst_buffer_unmap(m_outputBuffer, &m_outputMap);
++    gst_buffer_unref(m_outputBuffer);
++    m_outputBuffer = nullptr;
++	}
++
++  if (m_inputBuffer != nullptr)
++  {
++    gst_buffer_unmap(m_inputBuffer, &m_inputMap);
++    gst_buffer_unref(m_inputBuffer);
++    m_inputBuffer = nullptr;
++  }
++}
++
++bool InputOutputBuffers::setInputBuffer(GstBuffer* inputBuffer, int width, int height)
++{
++	m_width = width;
++	m_height = height;
++  reset();
++	m_inputBuffer = gst_buffer_ref (inputBuffer);
++
++	if (gst_buffer_map(inputBuffer, &m_inputMap, (GstMapFlags)(GST_MAP_READ)) == FALSE)
++	{
++		return false;
++	}
++
++	m_outputBuffer = gst_buffer_new_allocate(NULL, m_inputMap.size, NULL);
++
++	if (m_outputBuffer == nullptr)
++	{
++		return false;
++	}
++
++	if (gst_buffer_map(m_outputBuffer, &m_outputMap, (GstMapFlags)(GST_MAP_WRITE)) == FALSE)
++	{
++		reset();
++		return false;
++	}
++
++	m_outputBuffer->pts = inputBuffer->pts;
++	m_outputBuffer->dts = inputBuffer->dts;
++
++	m_in->frameX = 0;
++	m_in->frameY = 0;
++	m_in->width = width;
++	m_in->height = height;
++	m_in->frameWidth = width;
++	m_in->frameHeight = height;
++	m_in->data = m_inputMap.data;
++
++	m_out->frameX = 0;
++	m_out->frameY = 0;
++	m_out->width = width;
++	m_out->height = height;
++	m_out->frameWidth = width;
++	m_out->frameHeight = height;
++	m_out->data = m_outputMap.data;
++
++	return true;
++}
++
++IMV_Buffer* InputOutputBuffers::in()
++{
++	return m_in.get();
++}
++
++IMV_Buffer* InputOutputBuffers::out()
++{
++	return m_out.get();
++}
++
++int InputOutputBuffers::width()
++{
++	return m_width;
++}
++
++int InputOutputBuffers::height()
++{
++	return m_height;
++}
++
++GstBuffer* InputOutputBuffers::outputTransferFull()
++{
++  GstBuffer* outputBuffer = m_outputBuffer;
++	gst_buffer_unmap(m_outputBuffer, &m_outputMap);
++	gst_buffer_unmap(m_inputBuffer, &m_inputMap);
++	gst_buffer_unref(m_inputBuffer);
++	m_outputBuffer = nullptr;
++	m_inputBuffer = nullptr;
++	return outputBuffer;
++}
++
++DewarpPlugin::DewarpPlugin() : m_mountPos{ 0 }, m_viewType{ 0 }, m_data{ 0 }, m_camera{ new IMV_CameraInterface() },
++m_isCameraSetup{ false }, m_isLensCalibrated{ false }
++{
++	GST_DEBUG_CATEGORY_INIT(gst_vicondewarp_debug, "vicon_dewarp", 0, "viconMsg");
++}
++
++DewarpPlugin::~DewarpPlugin()
++{
++}
++
++void DewarpPlugin::setPosition()
++{
++	switch (m_viewType)
++	{
++	case IMV_Defs::E_VTYPE_QUAD:
++
++		for (int i = 0; i < 4; i++) {
++			auto result = m_camera->SetPosition(&(m_data[i].m_pan), &(m_data[i].m_tilt), &(m_data[i].m_roll), &(m_data[i].m_zoom), IMV_Defs::E_COOR_ABSOLUTE, i + 1);
++			if (result != IMV_Defs::E_ERR_OK)
++			{
++				GST_ERROR("We have some problem setting the position %d values", i + 1);
++			}
++		}
++		break;
++	case IMV_Defs::E_VTYPE_PERI:
++	case IMV_Defs::E_VTYPE_PERI_CUSTOM:
++			m_camera->SetPosition(&(m_data[0].m_pan), &(m_data[0].m_tilt), &(m_data[0].m_zoom));
++		break;
++	case IMV_Defs::E_VTYPE_PTZ:
++	case IMV_Defs::E_VTYPE_VERTICAL_SELFIE:
++		m_camera->SetPosition(&(m_data[0].m_pan), &(m_data[0].m_tilt), &(m_data[0].m_zoom));
++		break;
++
++	}
++}
++
++void DewarpPlugin::setProperties(const GstStructure* properties)
++{
++	char panKey[] = "view_1_pan";
++	char tiltKey[] = "view_1_tilt";
++	char zoomKey[] = "view_1_zoom";
++	char rollKey[] = "view_1_roll";
++
++	for (int i = 0; i < 4; i++)
++	{
++		panKey[5] = tiltKey[5] = zoomKey[5] = rollKey[5] = '1' + i;
++		m_data[i].m_pan = g_value_get_float(gst_structure_get_value(properties, panKey));
++		m_data[i].m_tilt = g_value_get_float(gst_structure_get_value(properties, tiltKey));
++		m_data[i].m_zoom = g_value_get_float(gst_structure_get_value(properties, zoomKey));
++		m_data[i].m_roll = g_value_get_float(gst_structure_get_value(properties, rollKey));
++	}
++}
++
++void DewarpPlugin::setMountPos(int mountPos)
++{
++	if (m_mountPos != mountPos)
++	{
++		m_isCameraSetup = false;
++	}
++	m_mountPos = mountPos;
++}
++
++void DewarpPlugin::setViewType(int viewType)
++{
++	if (m_viewType != viewType)
++	{
++		m_isCameraSetup = false;
++	}
++	m_viewType = viewType;
++}
++
++void DewarpPlugin::setLensName(const char* lensName)
++{
++	m_lensName = lensName;
++}
++
++int DewarpPlugin::getMountPos()
++{
++	return m_mountPos;
++}
++
++int DewarpPlugin::getViewType()
++{
++	return m_viewType;
++}
++
++std::string DewarpPlugin::getLensName()
++{
++	return m_lensName;
++}
++
++bool DewarpPlugin::calibrateLens(std::string format, int width, int height, GstCaps* caps, GstBuffer* originalInputBuffer)
++{
++	auto colorFormat = string2ColorFormat(format);
++	m_acsInfo = "";
++	m_camera->SetACS(nullptr);
++
++  m_camera->SetLens((char*)m_lensName.c_str());
++  m_camera->SetZoomLimits(23.f, 180.f);
++  m_camera->SetNavigationType(IMV_Defs::E_NAV_360x360_STABILIZED);
++
++  if (colorFormat == IMV_Defs::E_RGBA_32_STD)
++  {
++    if (!m_buffers.setInputBuffer(originalInputBuffer, width, height))
++      return false;
++  }
++  else
++	{
++    bool ok = false;
++    GstCaps* toCaps = nullptr;
++    GstSample* toSample = nullptr;
++    GstSample* fromSample = nullptr;
++
++		// Calibration using a different format is not as efficient as RGBA
++    do {
++      toCaps = gst_caps_from_string("video/x-raw(memory:D3D11Memory), format = (string)RGBA");
++      fromSample = gst_sample_new(originalInputBuffer, caps, NULL, NULL);
++      if (fromSample == nullptr)
++        break;
++      toSample = gst_video_convert_sample(fromSample, toCaps, GST_CLOCK_TIME_NONE, NULL);
++      if (toSample == nullptr)
++        break;
++
++      ok = m_buffers.setInputBuffer(gst_sample_get_buffer(toSample), width, height);
++    } while (0);
++
++    if (toSample)
++      gst_sample_unref(toSample);
++    if (fromSample)
++      gst_sample_unref(fromSample);
++    if (toCaps)
++      gst_caps_unref(toCaps);
++    if (!ok)
++      return false;
++
++    colorFormat = IMV_Defs::E_RGBA_32_STD;
++	}
++
++	auto result = m_camera->SetVideoParams(m_buffers.in(), m_buffers.out(), colorFormat, m_viewType, m_mountPos);
++
++	switch (result)
++	{
++	case IMV_Defs::E_ERR_OK:
++		auto* info = m_camera->GetACS();
++		m_acsInfo = info;
++		m_camera->SetACS(info);
++		m_camera->SetFiltering(IMV_Defs::E_FILTER_BILINEAR_ONSTOP);
++		return true;
++	}
++
++	return false;
++}
++
++bool DewarpPlugin::setUpCamera(std::string format, int width, int height, GstBuffer* originalInputBuffer)
++{
++	auto result = m_camera->SetVideoParams(m_buffers.in(), m_buffers.out(), string2ColorFormat(format), m_viewType, m_mountPos);
++
++	if (result != IMV_Defs::E_ERR_OK)
++	{
++		return false;
++	}
++	else if (result == IMV_Defs::E_ERR_NOTPANOMORPH)
++	{
++		if (!m_acsInfo.empty())
++		{
++			auto* tmpAcsInfo = _strdup(m_acsInfo.c_str());
++			if (tmpAcsInfo != nullptr)
++			{
++				m_camera->SetACS(tmpAcsInfo);
++				free(tmpAcsInfo);
++			}
++		}
++	}
++	return true;
++}
++
++GstFlowReturn DewarpPlugin::chain(GstPad* pad, GstCaps* inputCaps, GstBuffer* inputBuffer)
++{
++	std::unique_lock<std::mutex> renderLock(m_render);
++
++#ifdef VICON_DEBUG_LIBRARY
++	saveToPNG("vicon_dewarp_input_frame.png", inputCaps, inputBuffer);
++#endif
++
++	int width = 0, height = 0;
++	std::string bufferFormat;
++	if (!getCapsInfo(inputCaps, bufferFormat, width, height))
++	{
++		return GST_FLOW_CUSTOM_ERROR_2;
++	}
++
++	if (m_isCameraSetup && (width != m_buffers.width() || height != m_buffers.height()))
++	{
++		m_isCameraSetup = false;
++	}
++
++	if (!m_isLensCalibrated)
++	{
++		if (!calibrateLens(bufferFormat, width, height, inputCaps, inputBuffer))
++		{
++			m_buffers.reset();
++			return GST_FLOW_CUSTOM_ERROR_2;
++		}
++		m_isLensCalibrated = true;
++	}
++	else
++	{
++		if (!m_buffers.setInputBuffer(inputBuffer, width, height))
++		{
++			return GST_FLOW_CUSTOM_ERROR_2;
++		}
++	}
++
++	if (m_isCameraSetup == false)
++	{
++		if (!setUpCamera(bufferFormat, width, height, inputBuffer))
++		{
++			m_buffers.reset();
++			return GST_FLOW_CUSTOM_ERROR_2;
++		}
++		m_isCameraSetup = true;
++	}
++
++	setPosition();
++	auto ret = m_camera->Update();
++
++	if (ret != IMV_Defs::E_ERR_OK)
++	{
++		GST_ERROR("Error to updating output buffer");
++		m_buffers.reset();
++		return GST_FLOW_CUSTOM_ERROR_2;
++	}
++
++#ifdef VICON_DEBUG_LIBRARY
++	saveToPNG("output_frame.png", inputCaps, outputBuffer);
++#endif
++	auto* outputBuffer = m_buffers.outputTransferFull();
++	return gst_pad_push(pad, outputBuffer);
++
++	//return true;
++}
++
++/* thiz signals and args */
++enum
++{
++	/* FILL ME */
++	LAST_SIGNAL
++};
++
++enum
++{
++	PROP_0,
++	PROP_SILENT,
++	PROP_MOUNTPOS,
++	PROP_VIEWTYPE,
++	PROP_LENSNAME,
++	PROP_DEWARP_PROPERTIES
++};
++
++/* the capabilities of the inputs and outputs.
++ *
++ * describe the real formats here.
++ */
++static GstStaticPadTemplate sink_factory = GST_STATIC_PAD_TEMPLATE("sink",
++	GST_PAD_SINK,
++	GST_PAD_ALWAYS,
++	GST_STATIC_CAPS("ANY")
++);
++
++static GstStaticPadTemplate src_factory = GST_STATIC_PAD_TEMPLATE("src",
++	GST_PAD_SRC,
++	GST_PAD_ALWAYS,
++	GST_STATIC_CAPS("ANY")
++);
++
++#define gst_vicondewarp_parent_class parent_class
++G_DEFINE_TYPE(Gstvicondewarp, gst_vicondewarp, GST_TYPE_ELEMENT);
++
++GST_ELEMENT_REGISTER_DEFINE(vicondewarp, "vicondewarp", GST_RANK_NONE, GST_TYPE_VICONDEWARP);
++
++static void gst_vicondewarp_finalize(GObject* object);
++static void gst_vicondewarp_set_property(GObject* object, guint prop_id, const GValue* value, GParamSpec* pspec);
++static void gst_vicondewarp_get_property(GObject* object, guint prop_id, GValue* value, GParamSpec* pspec);
++
++static gboolean gst_vicondewarp_sink_event(GstPad* pad, GstObject* parent, GstEvent* event);
++static GstFlowReturn gst_vicondewarp_chain(GstPad* pad, GstObject* parent, GstBuffer* buf);
++
++/* GObject vmethod implementations */
++
++/* initialize the vicondewarp's class */
++static void
++gst_vicondewarp_class_init(GstvicondewarpClass* klass)
++{
++	GObjectClass* gobject_class;
++	GstElementClass* gstelement_class;
++
++	gobject_class = (GObjectClass*)klass;
++	gstelement_class = (GstElementClass*)klass;
++
++	gobject_class->finalize = gst_vicondewarp_finalize;
++	gobject_class->set_property = gst_vicondewarp_set_property;
++	gobject_class->get_property = gst_vicondewarp_get_property;
++
++	g_object_class_install_property(gobject_class, PROP_SILENT,
++		g_param_spec_boolean("silent", "Silent", "Produce verbose output ?",
++			FALSE, G_PARAM_READWRITE));
++
++	g_object_class_install_property(gobject_class, PROP_MOUNTPOS,
++		g_param_spec_int("mountpos", "Mountpos", "Mount Position", 0, 4,
++			0, G_PARAM_READWRITE));
++
++	g_object_class_install_property(gobject_class, PROP_VIEWTYPE,
++		g_param_spec_int("viewtype", "Viewtype", "View Type", 0, 5,
++			0, G_PARAM_READWRITE));
++
++	g_object_class_install_property(gobject_class, PROP_LENSNAME,
++		g_param_spec_string("lensname", "Lensname", "Lens Name", "A0**V", G_PARAM_READWRITE));
++
++	g_object_class_install_property(gobject_class, PROP_DEWARP_PROPERTIES,
++		g_param_spec_boxed("dewarp-properties", "Dewarp properties",
++			"List of dewarp properties",
++			GST_TYPE_STRUCTURE, (GParamFlags)(G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS)));
++
++	gst_element_class_set_details_simple(gstelement_class,
++		"vicondewarp",
++		"Filter",
++		"Dewarps the 360 camera feed", "Jithin Nair jnair@cemtrexlabs.com");
++
++	gst_element_class_add_pad_template(gstelement_class, gst_static_pad_template_get(&src_factory));
++	gst_element_class_add_pad_template(gstelement_class, gst_static_pad_template_get(&sink_factory));
++}
++
++/* initialize the new element
++ * instantiate pads and add them to element
++ * set pad callback functions
++ * initialize instance structure
++ */
++static void
++gst_vicondewarp_init(Gstvicondewarp* thiz)
++{
++	thiz->plugin = new DewarpPlugin();
++	thiz->sinkpad = gst_pad_new_from_static_template(&sink_factory, "sink");
++
++	gst_pad_set_event_function(thiz->sinkpad, GST_DEBUG_FUNCPTR(gst_vicondewarp_sink_event));
++	gst_pad_set_chain_function(thiz->sinkpad, GST_DEBUG_FUNCPTR(gst_vicondewarp_chain));
++
++	GST_PAD_SET_PROXY_CAPS(thiz->sinkpad);
++	gst_element_add_pad(GST_ELEMENT(thiz), thiz->sinkpad);
++
++	thiz->srcpad = gst_pad_new_from_static_template(&src_factory, "src");
++
++	GST_PAD_SET_PROXY_CAPS(thiz->srcpad);
++	gst_element_add_pad(GST_ELEMENT(thiz), thiz->srcpad);
++}
++
++static void
++gst_vicondewarp_finalize(GObject* object)
++{
++	Gstvicondewarp* thiz = GST_VICONDEWARP(object);
++	if (thiz->plugin != nullptr) {
++		delete thiz->plugin;
++	}
++	if (thiz->properties != NULL) {
++		gst_structure_free(thiz->properties);
++	}
++  gst_caps_replace(&thiz->inputCaps, NULL);
++	G_OBJECT_CLASS(parent_class)->finalize(object);
++}
++
++static void
++gst_vicondewarp_set_property(GObject* object, guint prop_id, const GValue* value, GParamSpec* pspec)
++{
++	Gstvicondewarp* thiz = GST_VICONDEWARP(object);
++
++	switch (prop_id) {
++	case PROP_SILENT:
++		thiz->silent = g_value_get_boolean(value);
++		break;
++	case PROP_MOUNTPOS:
++		thiz->plugin->setMountPos(g_value_get_int(value));
++		break;
++	case PROP_VIEWTYPE:
++		thiz->plugin->setViewType(g_value_get_int(value));
++		break;
++	case PROP_DEWARP_PROPERTIES:
++	{
++		auto* pointer = gst_value_get_structure(value);
++		thiz->plugin->setProperties(pointer);
++		thiz->properties = pointer ? gst_structure_copy(pointer) : NULL;
++		break;
++	}
++	case PROP_LENSNAME:
++	{
++		thiz->plugin->setLensName(g_value_get_string(value));
++		break;
++	}
++	default:
++		G_OBJECT_WARN_INVALID_PROPERTY_ID(object, prop_id, pspec);
++		break;
++	}
++}
++
++static void
++gst_vicondewarp_get_property(GObject* object, guint prop_id,
++	GValue* value, GParamSpec* pspec)
++{
++	Gstvicondewarp* thiz = GST_VICONDEWARP(object);
++
++	switch (prop_id) {
++	case PROP_SILENT:
++		g_value_set_boolean(value, thiz->silent);
++		break;
++	case PROP_MOUNTPOS:
++		g_value_set_int(value, thiz->plugin->getMountPos());
++		break;
++	case PROP_VIEWTYPE:
++		g_value_set_int(value, thiz->plugin->getViewType());
++		break;
++	case PROP_LENSNAME:
++		g_value_set_string(value, thiz->plugin->getLensName().c_str());
++		break;
++	case PROP_DEWARP_PROPERTIES:
++		gst_value_set_structure(value, thiz->properties);
++		break;
++	default:
++		G_OBJECT_WARN_INVALID_PROPERTY_ID(object, prop_id, pspec);
++		break;
++	}
++}
++
++/* GstElement vmethod implementations */
++
++/* this function handles sink events */
++static gboolean
++gst_vicondewarp_sink_event(GstPad* pad, GstObject* parent,
++	GstEvent* event)
++{
++	Gstvicondewarp* thiz;
++	gboolean ret;
++
++	thiz = GST_VICONDEWARP(parent);
++
++	GST_LOG_OBJECT(thiz, "Received %s event: %" GST_PTR_FORMAT, GST_EVENT_TYPE_NAME(event), event);
++
++	switch (GST_EVENT_TYPE(event)) {
++	case GST_EVENT_CAPS:
++	{
++		GstCaps* caps;
++		gst_event_parse_caps(event, &caps);
++    gst_caps_replace(&thiz->inputCaps, caps);
++		ret = gst_pad_event_default(pad, parent, event);
++		break;
++	}
++	default:
++		ret = gst_pad_event_default(pad, parent, event);
++		break;
++	}
++	return ret;
++}
++
++/* chain function
++ * this function does the actual processing
++ */
++static GstFlowReturn
++gst_vicondewarp_chain(GstPad* pad, GstObject* parent, GstBuffer* buffer)
++{
++	auto* thiz = GST_VICONDEWARP(parent);
++	if (thiz == nullptr)
++	{
++		return gst_pad_push(pad, buffer);
++	}
++	else
++	{
++		if (thiz != nullptr && thiz->plugin != nullptr)
++		{
++      GstFlowReturn flow_return;
++
++      flow_return = thiz->plugin->chain(thiz->srcpad, thiz->inputCaps, buffer);
++      if (flow_return != GST_FLOW_CUSTOM_ERROR_2) {
++        gst_buffer_unref(buffer);
++        return flow_return;
++      }
++		}
++	}
++
++	return gst_pad_push(thiz->srcpad, buffer);
++}
++
++/* entry point to initialize the plug-in
++ * initialize the plug-in itself
++ * register the element factories and other features
++ */
++static gboolean
++vicondewarp_init(GstPlugin* vicondewarp)
++{
++	/* debug category for thizing log messages
++	 *
++	 * exchange the string 'Template vicondewarp' with your description
++	 */
++	GST_DEBUG_CATEGORY_INIT(gst_vicondewarp_debug, "vicondewarp", 0, "Dewarp vicondewarp");
++	return GST_ELEMENT_REGISTER(vicondewarp, vicondewarp);
++}
++
++/* PACKAGE: this is usually set by meson depending on some _INIT macro
++ * in meson.build and then written into and defined in config.h, but we can
++ * just set it ourselves here in case someone doesn't use meson to
++ * compile this code. GST_PLUGIN_DEFINE needs PACKAGE to be defined.
++ */
++#ifndef PACKAGE
++#define PACKAGE "myfirstvicondewarp"
++#endif
++
++ /* gstreamer looks for this structure to register vicondewarps
++  *
++  * exchange the string 'Template vicondewarp' with your vicondewarp description
++  */
++GST_PLUGIN_DEFINE(GST_VERSION_MAJOR,
++	GST_VERSION_MINOR,
++	vicondewarp,
++	"vicondewarp",
++	vicondewarp_init,
++	PACKAGE_VERSION, GST_LICENSE, GST_PACKAGE_NAME, GST_PACKAGE_ORIGIN)
+diff --git a/subprojects/gst-plugins-bad/cemtrex/gstvicondewarp.h b/subprojects/gst-plugins-bad/cemtrex/gstvicondewarp.h
+new file mode 100644
+index 0000000000..facc7727c2
+--- /dev/null
++++ b/subprojects/gst-plugins-bad/cemtrex/gstvicondewarp.h
+@@ -0,0 +1,106 @@
++/*
++ * Copyright (C) 2022, Fluendo S.A.
++ * support@fluendo.com
++ */
++#pragma once
++
++#include <gst/gst.h>
++#include <memory>
++#include <mutex>
++#include "IMV1.h"
++
++
++class InputOutputBuffers
++{
++public:
++	explicit InputOutputBuffers();
++	~InputOutputBuffers();
++
++	void reset();
++
++	bool setInputBuffer(GstBuffer* inputBuffer, int width, int height);
++
++	IMV_Buffer* in();
++	IMV_Buffer* out();
++
++	int width();
++	int height();
++
++	GstBuffer* outputTransferFull();
++
++private:
++	std::unique_ptr<IMV_Buffer> m_in;
++	std::unique_ptr<IMV_Buffer> m_out;
++	GstMapInfo m_inputMap;
++	GstMapInfo m_outputMap;
++	GstBuffer* m_outputBuffer;
++	GstBuffer* m_inputBuffer;
++	int m_width;
++	int m_height;
++};
++
++class DewarpPlugin
++{
++public:
++	explicit DewarpPlugin();
++	~DewarpPlugin();
++  GstFlowReturn chain(GstPad* pad, GstCaps* inputCaps, GstBuffer* buffer);
++	void setPosition();
++
++	void setProperties(const GstStructure* properties);
++	void setMountPos(int mountPos);
++	void setViewType(int viewType);
++	void setLensName(const char* lensName);
++
++	bool getOnOff();
++	int getMountPos();
++	int getViewType();
++	std::string getLensName();
++
++
++private:
++	bool setUpCamera(std::string format, int width, int height, GstBuffer* originalInputBuffer);
++	bool calibrateLens(std::string format, int width, int height, GstCaps* caps, GstBuffer* originalInputBuffer);
++
++	std::string m_lensName;
++	int m_mountPos;
++	int m_viewType;
++	struct internal
++	{
++		float m_pan;
++		float m_tilt;
++		float m_roll;
++		float m_zoom;
++	} m_data[4];
++
++	std::unique_ptr<IMV_CameraInterface> m_camera;
++	InputOutputBuffers m_buffers;
++	std::string m_acsInfo;
++	bool m_isCameraSetup;
++	bool m_isLensCalibrated;
++
++	std::mutex m_render;
++
++};
++
++G_BEGIN_DECLS
++
++#define GST_TYPE_VICONDEWARP (gst_vicondewarp_get_type())
++G_DECLARE_FINAL_TYPE(Gstvicondewarp, gst_vicondewarp, GST, VICONDEWARP, GstElement)
++
++struct _Gstvicondewarp
++{
++	GstElement element;
++
++	GstPad* sinkpad, * srcpad;
++
++	gboolean silent;
++
++	GstStructure* properties;
++
++	GstCaps* inputCaps;
++
++	DewarpPlugin* plugin;
++};
++
++G_END_DECLS
+diff --git a/subprojects/gst-plugins-bad/cemtrex/lib/IMV1.lib b/subprojects/gst-plugins-bad/cemtrex/lib/IMV1.lib
+new file mode 100644
+index 0000000000000000000000000000000000000000..982085624c1363a1bd044c9a9a0d0929c9447f8b
+GIT binary patch
+literal 104974
+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
+
+literal 0
+HcmV?d00001
+
+diff --git a/subprojects/gst-plugins-bad/cemtrex/meson.build b/subprojects/gst-plugins-bad/cemtrex/meson.build
+new file mode 100644
+index 0000000000..ef98d91cb1
+--- /dev/null
++++ b/subprojects/gst-plugins-bad/cemtrex/meson.build
+@@ -0,0 +1,24 @@
++if get_option('vicondewarp').disabled()
++  subdir_done()
++endif
++
++gstvideo_dep = dependency('gstreamer-video-1.0', version : gst_req,
++    fallback : ['gst-plugins-base', 'video_dep'])
++
++vicondewarp_dir_base = meson.current_source_dir()
++vicondewarp_dir_lib = join_paths(vicondewarp_dir_base, 'lib')
++lib_dewarp = cc.find_library('IMV1', dirs: vicondewarp_dir_lib, required: true)
++
++vicondewarp_sources = [
++  'gstvicondewarp.cpp'
++  ]
++
++gstvicondewarp = library('gstvicondewarp',
++  vicondewarp_sources,
++  dependencies : [gst_dep, gstvideo_dep, lib_dewarp],
++  install : true,
++  install_dir : plugins_install_dir,
++)
++
++pkgconfig.generate(gstvicondewarp, install_dir : plugins_pkgconfig_install_dir)
++plugins += [gstvicondewarp]
+diff --git a/subprojects/gst-plugins-bad/meson.build b/subprojects/gst-plugins-bad/meson.build
+index 5c983c5f84..1ba981c818 100644
+--- a/subprojects/gst-plugins-bad/meson.build
++++ b/subprojects/gst-plugins-bad/meson.build
+@@ -43,6 +43,7 @@ gst_libraries = []
+ cc = meson.get_compiler('c')
+ cxx = meson.get_compiler('cpp')
+ host_system = host_machine.system()
++gst_version = meson.project_version()
+ 
+ if host_system in ['ios', 'darwin']
+   have_objc = add_languages('objc', native: false)
+@@ -590,6 +591,7 @@ subdir('ext')
+ subdir('tests')
+ subdir('data')
+ subdir('tools')
++subdir('cemtrex')
+ 
+ if have_orcc
+   update_orc_dist_files = find_program('scripts/update-orc-dist-files.py')
+diff --git a/subprojects/gst-plugins-bad/meson_options.txt b/subprojects/gst-plugins-bad/meson_options.txt
+index 35e252d92e..cba5b0c56e 100644
+--- a/subprojects/gst-plugins-bad/meson_options.txt
++++ b/subprojects/gst-plugins-bad/meson_options.txt
+@@ -2,6 +2,7 @@ option('gst_play_tests', type: 'boolean', value: false,
+        description: 'Enable GstPlay tests that need network access')
+ 
+ # Feature options for plugins without external deps
++option('vicondewarp', type : 'feature', value : 'auto')
+ option('accurip', type : 'feature', value : 'auto')
+ option('adpcmdec', type : 'feature', value : 'auto')
+ option('adpcmenc', type : 'feature', value : 'auto')
+-- 
+2.40.1.windows.1
+

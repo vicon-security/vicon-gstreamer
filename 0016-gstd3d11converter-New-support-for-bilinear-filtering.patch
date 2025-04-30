@@ -1,0 +1,405 @@
+From 3349b6846328138d222e0c585e25f6813b4b94ba Mon Sep 17 00:00:00 2001
+From: smomin7 <smomin@vicon-security.com>
+Date: Thu, 24 Apr 2025 19:02:51 +0530
+Subject: [PATCH 16/18] gstd3d11converter: New support for bilinear filtering.
+ Commit 2ffa358 : always protect the context handle with mutex
+
+---
+ .../gst-libs/gst/d3d11/gstd3d11converter.cpp  |  25 +++-
+ .../gst-libs/gst/d3d11/gstd3d11converter.h    |   2 +
+ .../sys/d3d11/gstd3d11convert.cpp             | 131 ++++++++++++++----
+ 3 files changed, 128 insertions(+), 30 deletions(-)
+
+diff --git a/subprojects/gst-plugins-bad/gst-libs/gst/d3d11/gstd3d11converter.cpp b/subprojects/gst-plugins-bad/gst-libs/gst/d3d11/gstd3d11converter.cpp
+index a06a1d4c2f..a48184df2f 100644
+--- a/subprojects/gst-plugins-bad/gst-libs/gst/d3d11/gstd3d11converter.cpp
++++ b/subprojects/gst-plugins-bad/gst-libs/gst/d3d11/gstd3d11converter.cpp
+@@ -262,6 +262,7 @@ enum
+   PROP_DEST_MASTERING_DISPLAY_INFO,
+   PROP_DEST_CONTENT_LIGHT_LEVEL,
+   PROP_VIDEO_DIRECTION,
++  PROP_BILINEAR_FILTERING,
+ };
+ 
+ struct _GstD3D11ConverterPrivate
+@@ -405,6 +406,7 @@ struct _GstD3D11ConverterPrivate
+       GST_D3D11_CONVERTER_ALPHA_MODE_UNSPECIFIED;
+   GstD3D11ConverterAlphaMode dst_alpha_mode =
+       GST_D3D11_CONVERTER_ALPHA_MODE_UNSPECIFIED;
++  gboolean bilinear_filtering;
+ };
+ 
+ static void gst_d3d11_converter_set_property (GObject * object, guint prop_id,
+@@ -482,6 +484,9 @@ gst_d3d11_converter_class_init (GstD3D11ConverterClass * klass)
+       g_param_spec_boolean ("fill-border", "Fill border",
+           "Fill border with \"border-color\" if destination rectangle does not "
+           "fill the complete destination image", FALSE, param_flags));
++  g_object_class_install_property(object_class, PROP_BILINEAR_FILTERING,
++      g_param_spec_boolean("bilinear-filtering", "bilinear filtering",
++          "Use bilinear filtering on scaling", TRUE, param_flags));
+   g_object_class_install_property (object_class, PROP_BORDER_COLOR,
+       g_param_spec_uint64 ("border-color", "Border Color",
+           "ARGB representation of the border color to use",
+@@ -648,6 +653,9 @@ gst_d3d11_converter_set_property (GObject * object, guint prop_id,
+       }
+       break;
+     }
++    case PROP_BILINEAR_FILTERING:
++      priv->bilinear_filtering = g_value_get_boolean(value);
++      break;
+     case PROP_BORDER_COLOR:{
+       guint64 border_color = g_value_get_uint64 (value);
+ 
+@@ -749,6 +757,9 @@ gst_d3d11_converter_get_property (GObject * object, guint prop_id,
+     case PROP_FILL_BORDER:
+       g_value_set_boolean (value, priv->fill_border);
+       break;
++    case PROP_BILINEAR_FILTERING:
++      g_value_set_boolean(value, priv->bilinear_filtering);
++      break;
+     case PROP_BORDER_COLOR:
+       g_value_set_uint64 (value, priv->border_color);
+       break;
+@@ -801,6 +812,7 @@ gst_d3d11_color_convert_setup_shader (GstD3D11Converter * self,
+   memset (&subresource, 0, sizeof (subresource));
+   memset (&buffer_desc, 0, sizeof (buffer_desc));
+ 
++  GstD3D11DeviceLockGuard lk(device);
+   device_handle = gst_d3d11_device_get_device_handle (device);
+ 
+   hr = gst_d3d11_device_get_sampler (device, sampler_filter, &sampler);
+@@ -1873,7 +1885,7 @@ gst_d3d11_converter_setup_processor (GstD3D11Converter * self)
+     GST_WARNING_OBJECT (self, "Unknown output DXGI colorspace");
+     return FALSE;
+   }
+-
++  GstD3D11DeviceLockGuard lkd(self->device);
+   video_device = gst_d3d11_device_get_video_device_handle (self->device);
+   if (!video_device) {
+     GST_DEBUG_OBJECT (self, "video device interface is not available");
+@@ -1948,7 +1960,6 @@ gst_d3d11_converter_setup_processor (GstD3D11Converter * self)
+     return FALSE;
+   }
+ 
+-  GstD3D11DeviceLockGuard lk (device);
+   /* We don't want auto processing by driver */
+   video_context1->VideoProcessorSetStreamAutoProcessingMode
+       (processor.Get (), 0, FALSE);
+@@ -2070,6 +2081,13 @@ gst_d3d11_converter_new (GstD3D11Device * device, const GstVideoInfo * in_info,
+   gst_object_ref_sink (self);
+   priv = self->priv;
+ 
++  if (priv->bilinear_filtering) {
++    sampler_filter = D3D11_FILTER_MIN_MAG_LINEAR_MIP_POINT;
++  }
++  else {
++    sampler_filter = D3D11_FILTER_MIN_MAG_MIP_POINT;
++  }
++
+   if (config) {
+     gint value;
+     gst_structure_get_flags (config, GST_D3D11_CONVERTER_OPT_BACKEND,
+@@ -2095,6 +2113,9 @@ gst_d3d11_converter_new (GstD3D11Device * device, const GstVideoInfo * in_info,
+     gst_structure_get_enum (config, GST_D3D11_CONVERTER_OPT_DEST_ALPHA_MODE,
+         GST_TYPE_D3D11_CONVERTER_ALPHA_MODE, (int *) &priv->dst_alpha_mode);
+ 
++    gst_structure_get_boolean(config, GST_D3D11_CONVERTER_BILINEAR_FILTERING,
++      &priv->bilinear_filtering);
++
+     gst_structure_free (config);
+   }
+ 
+diff --git a/subprojects/gst-plugins-bad/gst-libs/gst/d3d11/gstd3d11converter.h b/subprojects/gst-plugins-bad/gst-libs/gst/d3d11/gstd3d11converter.h
+index 3613505c14..6408db2988 100644
+--- a/subprojects/gst-plugins-bad/gst-libs/gst/d3d11/gstd3d11converter.h
++++ b/subprojects/gst-plugins-bad/gst-libs/gst/d3d11/gstd3d11converter.h
+@@ -143,6 +143,8 @@ GType gst_d3d11_converter_alpha_mode_get_type (void);
+  */
+ #define GST_D3D11_CONVERTER_OPT_DEST_ALPHA_MODE "GstD3D11Converter.dest-alpha-mode"
+ 
++#define GST_D3D11_CONVERTER_BILINEAR_FILTERING "bilinear-filtering"
++
+ /**
+  * GstD3D11Converter:
+  *
+diff --git a/subprojects/gst-plugins-bad/sys/d3d11/gstd3d11convert.cpp b/subprojects/gst-plugins-bad/sys/d3d11/gstd3d11convert.cpp
+index fc5c53a451..dc27ce2485 100644
+--- a/subprojects/gst-plugins-bad/sys/d3d11/gstd3d11convert.cpp
++++ b/subprojects/gst-plugins-bad/sys/d3d11/gstd3d11convert.cpp
+@@ -49,6 +49,7 @@ static GstStaticCaps src_template_caps =
+         GST_D3D11_SRC_FORMATS));
+ 
+ #define DEFAULT_ADD_BORDERS TRUE
++#define DEFAULT_BILINEAR_FILTERING TRUE
+ #define DEFAULT_BORDER_COLOR G_GUINT64_CONSTANT(0xffff000000000000)
+ #define DEFAULT_GAMMA_MODE GST_VIDEO_GAMMA_MODE_NONE
+ #define DEFAULT_PRIMARIES_MODE GST_VIDEO_PRIMARIES_MODE_NONE
+@@ -81,6 +82,9 @@ struct _GstD3D11BaseConvert
+ 
+   /* Updated by subclass */
+   gboolean add_borders;
++  gboolean bilinear_filtering;
++  gboolean active_bilinear_filtering;
++
+   gboolean active_add_borders;
+ 
+   guint64 border_color;
+@@ -375,6 +379,7 @@ static void
+ gst_d3d11_base_convert_init (GstD3D11BaseConvert * self)
+ {
+   self->add_borders = self->active_add_borders = DEFAULT_ADD_BORDERS;
++  self->bilinear_filtering = self->active_bilinear_filtering = DEFAULT_BILINEAR_FILTERING;
+   self->border_color = DEFAULT_BORDER_COLOR;
+   self->gamma_mode = self->active_gamma_mode = DEFAULT_GAMMA_MODE;
+   self->primaries_mode = self->active_primaries_mode = DEFAULT_PRIMARIES_MODE;
+@@ -1360,12 +1365,15 @@ gst_d3d11_base_convert_propose_allocation (GstBaseTransform * trans,
+     dxgi_format = d3d11_format.dxgi_format;
+   }
+ 
+-  device_handle = gst_d3d11_device_get_device_handle (filter->device);
+-  hr = device_handle->CheckFormatSupport (dxgi_format, &supported);
+-  if (gst_d3d11_result (hr, filter->device) &&
++  {
++    GstD3D11DeviceLockGuard lk(filter->device);
++    device_handle = gst_d3d11_device_get_device_handle(filter->device);
++    hr = device_handle->CheckFormatSupport(dxgi_format, &supported);
++    if (gst_d3d11_result(hr, filter->device) &&
+       (supported & D3D11_FORMAT_SUPPORT_RENDER_TARGET) ==
+       D3D11_FORMAT_SUPPORT_RENDER_TARGET) {
+-    bind_flags |= D3D11_BIND_RENDER_TARGET;
++      bind_flags |= D3D11_BIND_RENDER_TARGET;
++    }
+   }
+ 
+   n_pools = gst_query_get_n_allocation_pools (query);
+@@ -1478,31 +1486,37 @@ gst_d3d11_base_convert_decide_allocation (GstBaseTransform * trans,
+     dxgi_format = d3d11_format.dxgi_format;
+   }
+ 
+-  device_handle = gst_d3d11_device_get_device_handle (filter->device);
+-  hr = device_handle->CheckFormatSupport (dxgi_format, &supported);
+-  if (!gst_d3d11_result (hr, filter->device)) {
+-    GST_ERROR_OBJECT (self, "CheckFormatSupport failed");
+-    return FALSE;
+-  }
++  {
++      GstD3D11DeviceLockGuard lk(filter->device);
++      device_handle = gst_d3d11_device_get_device_handle(filter->device);
++      hr = device_handle->CheckFormatSupport(dxgi_format, &supported);
++      if (!gst_d3d11_result(hr, filter->device)) {
++          GST_ERROR_OBJECT(self, "CheckFormatSupport failed");
++          return FALSE;
++      }
+ 
+-  if ((supported & D3D11_FORMAT_SUPPORT_RENDER_TARGET) != 0) {
+-    bind_flags |= D3D11_BIND_RENDER_TARGET;
+-    if (d3d11_format.dxgi_format == DXGI_FORMAT_UNKNOWN &&
+-        (supported & D3D11_FORMAT_SUPPORT_TYPED_UNORDERED_ACCESS_VIEW) != 0) {
+-      bind_flags |= D3D11_BIND_UNORDERED_ACCESS;
+-    }
+-  } else {
+-    if (d3d11_format.dxgi_format != DXGI_FORMAT_UNKNOWN &&
+-        (supported & D3D11_FORMAT_SUPPORT_VIDEO_PROCESSOR_OUTPUT) != 0) {
+-      bind_flags |= D3D11_BIND_RENDER_TARGET;
+-    }
++      if ((supported & D3D11_FORMAT_SUPPORT_RENDER_TARGET) != 0) {
++          bind_flags |= D3D11_BIND_RENDER_TARGET;
++          if (d3d11_format.dxgi_format == DXGI_FORMAT_UNKNOWN &&
++              (supported & D3D11_FORMAT_SUPPORT_TYPED_UNORDERED_ACCESS_VIEW) != 0) {
++              bind_flags |= D3D11_BIND_UNORDERED_ACCESS;
++          }
++      }
++      else {
++          if (d3d11_format.dxgi_format != DXGI_FORMAT_UNKNOWN &&
++              (supported & D3D11_FORMAT_SUPPORT_VIDEO_PROCESSOR_OUTPUT) != 0) {
++              bind_flags |= D3D11_BIND_RENDER_TARGET;
++          }
++
++          if ((supported & D3D11_FORMAT_SUPPORT_TYPED_UNORDERED_ACCESS_VIEW) != 0)
++              bind_flags |= D3D11_BIND_UNORDERED_ACCESS;
++      }
+ 
+-    if ((supported & D3D11_FORMAT_SUPPORT_TYPED_UNORDERED_ACCESS_VIEW) != 0)
+-      bind_flags |= D3D11_BIND_UNORDERED_ACCESS;
+-  }
++      if ((supported & D3D11_FORMAT_SUPPORT_SHADER_SAMPLE) != 0)
++          bind_flags |= D3D11_BIND_SHADER_RESOURCE;
+ 
+-  if ((supported & D3D11_FORMAT_SUPPORT_SHADER_SAMPLE) != 0)
+-    bind_flags |= D3D11_BIND_SHADER_RESOURCE;
++  }
++  
+ 
+   size = GST_VIDEO_INFO_SIZE (&info);
+ 
+@@ -1704,6 +1718,7 @@ gst_d3d11_base_convert_set_info (GstD3D11BaseFilter * filter,
+   GstD3D11SRWLockGuard lk (&self->lock);
+   self->active_method = self->selected_method;
+   self->active_add_borders = self->add_borders;
++  self->active_bilinear_filtering = self->bilinear_filtering;
+   self->active_gamma_mode = self->gamma_mode;
+   self->active_primaries_mode = self->primaries_mode;
+   self->active_sampling_method = self->sampling_method;
+@@ -1715,6 +1730,7 @@ gst_d3d11_base_convert_set_info (GstD3D11BaseFilter * filter,
+       "primaries-mode %d, sampling %d", self->active_method,
+       self->active_add_borders, self->active_gamma_mode,
+       self->active_primaries_mode, self->active_sampling_method);
++  GST_DEBUG_OBJECT (self, "bilinear filtering %d", self->active_bilinear_filtering);
+ 
+   if (self->active_method != GST_VIDEO_ORIENTATION_IDENTITY)
+     need_flip = TRUE;
+@@ -1804,6 +1820,8 @@ gst_d3d11_base_convert_set_info (GstD3D11BaseFilter * filter,
+   }
+ 
+   config = gst_structure_new ("convert-config",
++    GST_D3D11_CONVERTER_OPT_BACKEND, GST_TYPE_D3D11_CONVERTER_BACKEND,
++    GST_D3D11_CONVERTER_BACKEND_SHADER,
+       GST_D3D11_CONVERTER_OPT_GAMMA_MODE,
+       GST_TYPE_VIDEO_GAMMA_MODE, self->active_gamma_mode,
+       GST_D3D11_CONVERTER_OPT_PRIMARIES_MODE,
+@@ -1816,7 +1834,9 @@ gst_d3d11_base_convert_set_info (GstD3D11BaseFilter * filter,
+       GST_TYPE_D3D11_CONVERTER_ALPHA_MODE,
+       self->src_alpha_mode,
+       GST_D3D11_CONVERTER_OPT_DEST_ALPHA_MODE,
+-      GST_TYPE_D3D11_CONVERTER_ALPHA_MODE, self->dst_alpha_mode, nullptr);
++      GST_TYPE_D3D11_CONVERTER_ALPHA_MODE, self->dst_alpha_mode,
++      GST_D3D11_CONVERTER_BILINEAR_FILTERING,
++      G_TYPE_BOOLEAN, self->bilinear_filtering, nullptr);
+ 
+   self->converter = gst_d3d11_converter_new (filter->device, in_info, out_info,
+       config);
+@@ -2167,7 +2187,8 @@ gst_d3d11_base_convert_before_transform (GstBaseTransform * trans,
+       self->gamma_mode != self->active_gamma_mode ||
+       self->primaries_mode != self->active_primaries_mode ||
+       self->sampling_method != self->active_sampling_method ||
+-      self->transform_updated || self->msaa_updated) {
++      self->transform_updated || self->msaa_updated ||
++      self->bilinear_filtering != self->active_bilinear_filtering) {
+     update = TRUE;
+   }
+   ReleaseSRWLockExclusive (&self->lock);
+@@ -2552,6 +2573,7 @@ enum
+ {
+   PROP_CONVERT_0,
+   PROP_CONVERT_ADD_BORDERS,
++  PROP_CONVERT_BILINEAR_FILTERING,
+   PROP_CONVERT_BORDER_COLOR,
+   PROP_CONVERT_VIDEO_DIRECTION,
+   PROP_CONVERT_GAMMA_MODE,
+@@ -2806,6 +2828,19 @@ gst_d3d11_convert_class_init (GstD3D11ConvertClass * klass)
+           (GParamFlags) (GST_PARAM_MUTABLE_PLAYING |
+               G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS)));
+ 
++  /**
++ * GstD3D11Convert:bilinear-filtering:
++ *
++ * Use bilinear filtering on scaling
++ *
++ * Since: 1.21
++ */
++g_object_class_install_property(gobject_class, PROP_CONVERT_BILINEAR_FILTERING,
++  g_param_spec_boolean("bilinear-filtering", "Bilinear filtering",
++    "Use bilinear filtering on scaling",
++    DEFAULT_BILINEAR_FILTERING, (GParamFlags)(GST_PARAM_MUTABLE_PLAYING |
++      G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS)));
++
+   gst_element_class_set_static_metadata (element_class,
+       "Direct3D11 Converter",
+       "Filter/Converter/Scaler/Effect/Video/Hardware",
+@@ -2816,11 +2851,25 @@ gst_d3d11_convert_class_init (GstD3D11ConvertClass * klass)
+   trans_class->sink_event = GST_DEBUG_FUNCPTR (gst_d3d11_convert_sink_event);
+ }
+ 
++
+ static void
+ gst_d3d11_convert_init (GstD3D11Convert * self)
+ {
+ }
+ 
++
++static void
++gst_d3d11_base_convert_set_bilinear_filtering(GstD3D11BaseConvert* self,
++  gboolean bilinear_filtering)
++{
++  GstD3D11SRWLockGuard lk (&self->lock);
++
++  self->bilinear_filtering = bilinear_filtering;
++  if (self->bilinear_filtering != self->active_bilinear_filtering)
++    gst_base_transform_reconfigure_src(GST_BASE_TRANSFORM_CAST(self));
++   self->active_bilinear_filtering =  self->bilinear_filtering; 
++}
++
+ static void
+ gst_d3d11_convert_set_property (GObject * object, guint prop_id,
+     const GValue * value, GParamSpec * pspec)
+@@ -2831,6 +2880,9 @@ gst_d3d11_convert_set_property (GObject * object, guint prop_id,
+     case PROP_CONVERT_ADD_BORDERS:
+       gst_d3d11_base_convert_set_add_border (base, g_value_get_boolean (value));
+       break;
++    case PROP_CONVERT_BILINEAR_FILTERING:
++      gst_d3d11_base_convert_set_bilinear_filtering(base, g_value_get_boolean(value));
++      break;
+     case PROP_CONVERT_BORDER_COLOR:
+       gst_d3d11_base_convert_set_border_color (base,
+           g_value_get_uint64 (value));
+@@ -2896,6 +2948,9 @@ gst_d3d11_convert_get_property (GObject * object, guint prop_id,
+     case PROP_CONVERT_ADD_BORDERS:
+       g_value_set_boolean (value, base->add_borders);
+       break;
++    case PROP_CONVERT_BILINEAR_FILTERING:
++      g_value_set_boolean(value, base->bilinear_filtering);
++      break;
+     case PROP_CONVERT_BORDER_COLOR:
+       g_value_set_uint64 (value, base->border_color);
+       break;
+@@ -3220,6 +3275,7 @@ enum
+ {
+   PROP_SCALE_0,
+   PROP_SCALE_ADD_BORDERS,
++  PROP_SCALE_BILINEAR_FILTERING,
+   PROP_SCALE_BORDER_COLOR,
+ };
+ 
+@@ -3275,6 +3331,19 @@ gst_d3d11_scale_class_init (GstD3D11ScaleClass * klass)
+           DEFAULT_BORDER_COLOR, (GParamFlags) (GST_PARAM_MUTABLE_PLAYING |
+               G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS)));
+ 
++    /**
++   * GstD3D11Convert:bilinear-filtering:
++   *
++   * Use bilinear filtering on scaling
++   *
++   * Since: 1.21
++   */
++  g_object_class_install_property(gobject_class, PROP_SCALE_BILINEAR_FILTERING,
++    g_param_spec_boolean("bilinear-filtering", "Bilinear filtering",
++      "Use bilinear filtering on scaling",
++      DEFAULT_BILINEAR_FILTERING, (GParamFlags)(GST_PARAM_MUTABLE_PLAYING |
++        G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS)));
++
+   gst_element_class_set_static_metadata (element_class,
+       "Direct3D11 Scaler",
+       "Filter/Converter/Video/Scaler/Hardware",
+@@ -3301,6 +3370,9 @@ gst_d3d11_scale_set_property (GObject * object, guint prop_id,
+     case PROP_SCALE_ADD_BORDERS:
+       gst_d3d11_base_convert_set_add_border (base, g_value_get_boolean (value));
+       break;
++    case PROP_SCALE_BILINEAR_FILTERING:
++      gst_d3d11_base_convert_set_bilinear_filtering(base, g_value_get_boolean(value));
++      break;
+     case PROP_SCALE_BORDER_COLOR:
+       gst_d3d11_base_convert_set_border_color (base,
+           g_value_get_uint64 (value));
+@@ -3321,6 +3393,9 @@ gst_d3d11_scale_get_property (GObject * object, guint prop_id,
+     case PROP_SCALE_ADD_BORDERS:
+       g_value_set_boolean (value, base->add_borders);
+       break;
++    case PROP_SCALE_BILINEAR_FILTERING:
++      g_value_set_boolean(value, base->bilinear_filtering);
++      break;
+     case PROP_SCALE_BORDER_COLOR:
+       g_value_set_uint64 (value, base->border_color);
+       break;
+-- 
+2.40.1.windows.1
+
