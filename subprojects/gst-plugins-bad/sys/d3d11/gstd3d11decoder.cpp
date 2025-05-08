@@ -293,6 +293,7 @@ gst_d3d11_decoder_init (GstD3D11Decoder * self)
 static void
 gst_d3d11_decoder_clear_resource (GstD3D11Decoder * self)
 {
+  GstD3D11DeviceLockGuard lkd (self->device);
   GstD3D11SRWLockGuard lk (&self->lock);
   if (self->internal_pool) {
     gst_buffer_pool_set_active (self->internal_pool, FALSE);
@@ -327,11 +328,13 @@ gst_d3d11_decoder_dispose (GObject * obj)
 {
   GstD3D11Decoder *self = GST_D3D11_DECODER (obj);
 
-  gst_d3d11_decoder_reset (self);
+  {
+    GstD3D11DeviceLockGuard lk(self->device);
+    gst_d3d11_decoder_reset(self);
 
-  GST_D3D11_CLEAR_COM (self->video_device);
-  GST_D3D11_CLEAR_COM (self->video_context);
-
+    GST_D3D11_CLEAR_COM(self->video_device);
+    GST_D3D11_CLEAR_COM(self->video_context);
+  }
   gst_clear_object (&self->device);
 
   G_OBJECT_CLASS (parent_class)->dispose (obj);
@@ -362,6 +365,7 @@ gst_d3d11_decoder_new (GstD3D11Device * device, GstDxvaCodec codec)
   g_return_val_if_fail (codec > GST_DXVA_CODEC_NONE, nullptr);
   g_return_val_if_fail (codec < GST_DXVA_CODEC_LAST, nullptr);
 
+  GstD3D11DeviceLockGuard lk(device);
   video_device = gst_d3d11_device_get_video_device_handle (device);
   if (!video_device) {
     GST_WARNING_OBJECT (device, "ID3D11VideoDevice is not available");
@@ -1388,9 +1392,12 @@ gst_d3d11_decoder_new_picture (GstD3D11Decoder * decoder,
      * headers */
     gst_video_decoder_negotiate (videodec);
 
-    if (!gst_d3d11_decoder_prepare_output_view_pool (decoder)) {
-      GST_ERROR_OBJECT (videodec, "Failed to setup internal pool");
-      return GST_FLOW_ERROR;
+    {
+      GstD3D11DeviceLockGuard lk(decoder->device);
+      if (!gst_d3d11_decoder_prepare_output_view_pool(decoder)) {
+        GST_ERROR_OBJECT(videodec, "Failed to setup internal pool");
+        return GST_FLOW_ERROR;
+      }
     }
   } else if (!gst_buffer_pool_set_active (decoder->internal_pool, TRUE)) {
     GST_ERROR_OBJECT (videodec, "Couldn't set active internal pool");
@@ -1466,6 +1473,7 @@ gst_d3d11_decoder_crop_and_copy_buffer (GstD3D11Decoder * self,
     GstBuffer * src, GstBuffer * dst)
 {
   GstD3D11Device *device = self->device;
+  GstD3D11DeviceLockGuard lk(device);
   ID3D11DeviceContext *context =
       gst_d3d11_device_get_device_context_handle (device);
   GstD3D11Memory *src_dmem;
@@ -1504,7 +1512,6 @@ gst_d3d11_decoder_crop_and_copy_buffer (GstD3D11Decoder * self,
   if (!gst_d3d11_decoder_ensure_staging_texture (self))
     return FALSE;
 
-  GstD3D11DeviceLockGuard lk (device);
   if (!gst_video_frame_map (&frame, &self->output_info, dst, GST_MAP_WRITE)) {
     GST_ERROR_OBJECT (self, "Failed to map output buffer");
     return FALSE;
@@ -1658,6 +1665,11 @@ gst_d3d11_decoder_negotiate (GstD3D11Decoder * decoder,
 
   info = &decoder->output_info;
   input_state = decoder->input_state;
+
+  if (input_state == nullptr) {
+    GST_WARNING_OBJECT (videodec, "Input state is null");
+    return FALSE;
+  }
 
   if (!decoder->configured) {
     GST_WARNING_OBJECT (videodec, "Decoder is not configured");

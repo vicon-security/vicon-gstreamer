@@ -333,6 +333,7 @@ gst_d3d11_overlay_compositor_setup_shader (GstD3D11OverlayCompositor * self)
   memset (&blend_desc, 0, sizeof (blend_desc));
   memset (&subresource, 0, sizeof (subresource));
 
+  GstD3D11DeviceLockGuard lk(device);
   device_handle = gst_d3d11_device_get_device_handle (device);
 
   hr = gst_d3d11_device_get_sampler (device,
