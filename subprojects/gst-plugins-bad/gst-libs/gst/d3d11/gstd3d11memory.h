@@ -25,6 +25,7 @@
 #include <gst/video/video.h>
 #include <gst/d3d11/gstd3d11_fwd.h>
 #include <gst/d3d11/gstd3d11format.h>
+#include <d2d1.h>
 
 G_BEGIN_DECLS
 
@@ -259,6 +260,12 @@ GST_D3D11_API
 gboolean                          gst_d3d11_memory_get_nt_handle  (GstD3D11Memory * mem,
                                                                    HANDLE * handle);
 
+
+GST_D3D11_API
+ID2D1RenderTarget* gst_d3d11_memory_get_d2d1_render_target (GstD3D11Memory * mem,
+                                                            ID2D1Factory * factory);
+
+
 /**
  * GstD3D11Allocator:
  *
@@ -365,6 +372,10 @@ GST_D3D11_API
 gboolean                gst_d3d11_pool_allocator_get_pool_size (GstD3D11PoolAllocator * allocator,
                                                                 guint * max_size,
                                                                 guint * outstanding_size);
+
+GST_D3D11_API
+void                    gst_d3d11_pool_allocator_set_blocked (GstD3D11Allocator* allocator,
+                                                                gboolean blocked);
 
 G_END_DECLS
 

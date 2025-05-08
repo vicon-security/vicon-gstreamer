@@ -3,6 +3,7 @@ d3d11_sources = [
   'gstd3d11basefilter.cpp',
   'gstd3d11compositor.cpp',
   'gstd3d11convert.cpp',
+  'gstd3d11crop.cpp',
   'gstd3d11decoder.cpp',
   'gstd3d11deinterlace.cpp',
   'gstd3d11download.cpp',
@@ -106,6 +107,14 @@ if not gstd3d11_dep.found() or not gstdxva_dep.found()
   subdir_done()
 endif
 
+d2d1_lib = cc.find_library('d2d1', required: false)
+if cc.has_header('d2d1.h') and d2d1_lib.found()
+  extra_dep += [d2d1_lib]
+  d3d11_sources += ['gstd3d11d2d1.cpp']
+  extra_args += ['-DHAVE_D2D1']
+endif
+
+d3dcompiler_lib = cc.find_library('d3dcompiler', required: d3d11_option)
 runtimeobject_lib = cc.find_library('runtimeobject', required : false)
 winmm_lib = cc.find_library('winmm', required: false)
 
@@ -152,8 +161,11 @@ endif
 if d3d11_winapi_app
   d3d11_sources += winapi_app_sources
   extra_dep += [runtimeobject_lib]
+
   if cc.get_id() == 'msvc' and get_option('b_sanitize') == 'address'
-    extra_args += ['/bigobj']
+     # When building with sanitizer it gives next error:
+     # gstd3d11window_corewindow.cpp : fatal error C1128: number of sections exceeded object file format limit: compile with /bigobj
+     extra_args += ['/bigobj']
   endif
 endif
 

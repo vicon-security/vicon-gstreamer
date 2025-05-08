@@ -1216,6 +1216,11 @@ gst_gl_context_egl_destroy_context (GstGLContext * context)
     gst_object_unref (window);
   }
 
+  if (window) {
+    gst_object_unref (window);
+    GST_DEBUG ("GL Context window unref \n");
+  }
+
   g_clear_pointer (&egl->dma_formats, g_array_unref);
 
   gst_gl_context_egl_activate (context, FALSE);

@@ -371,11 +371,11 @@ MakeHeaders (guint8 * p, int type, int width, int height, guint8 * qt,
   size = ((precision & 1) ? 128 : 64);
   p = MakeQuantHeader (p, qt, size, 0);
   qt += size;
-
+#if 0
   size = ((precision & 2) ? 128 : 64);
   p = MakeQuantHeader (p, qt, size, 1);
   qt += size;
-
+#endif
   if (dri != 0)
     p = MakeDRIHeader (p, dri);
 
@@ -397,10 +397,10 @@ MakeHeaders (guint8 * p, int type, int width, int height, guint8 * qt,
   *p++ = 0;                     /* quant table 0 */
   *p++ = 1;                     /* comp 1 */
   *p++ = 0x11;                  /* hsamp = 1, vsamp = 1 */
-  *p++ = 1;                     /* quant table 1 */
+  *p++ = ((precision & 1) ? 1 : 0); ;                     /* quant table 1 */
   *p++ = 2;                     /* comp 2 */
   *p++ = 0x11;                  /* hsamp = 1, vsamp = 1 */
-  *p++ = 1;                     /* quant table 1 */
+  *p++ = ((precision & 1) ? 1 : 0); ;                     /* quant table 1 */
 
   p = MakeHuffmanHeader (p, lum_dc_codelens,
       sizeof (lum_dc_codelens), lum_dc_symbols, sizeof (lum_dc_symbols), 0, 0);
@@ -680,6 +680,7 @@ gst_rtp_jpeg_depay_process (GstRTPBaseDepayload * depayload, GstRTPBuffer * rtp)
     size = MakeHeaders (map.data, type, width, height, qtable, precision, dri);
     gst_buffer_unmap (outbuf, &map);
     gst_buffer_resize (outbuf, 0, size);
+    outbuf->pts = rtp->buffer->pts;
 
     GST_DEBUG_OBJECT (rtpjpegdepay, "pushing %u bytes of header", size);
 
@@ -729,6 +730,9 @@ gst_rtp_jpeg_depay_process (GstRTPBaseDepayload * depayload, GstRTPBuffer * rtp)
     }
 
     gst_rtp_drop_non_video_meta (rtpjpegdepay, outbuf);
+    if (outbuf != NULL){
+      outbuf->pts = gst_adapter_prev_pts(rtpjpegdepay->adapter, NULL);
+    }
 
     GST_DEBUG_OBJECT (rtpjpegdepay, "returning %u bytes", avail);
   }

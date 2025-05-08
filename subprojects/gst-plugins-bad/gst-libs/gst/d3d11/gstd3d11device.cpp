@@ -104,6 +104,15 @@ static GParamSpec *pspec_removed_reason = nullptr;
 #define DEFAULT_ADAPTER 0
 #define DEFAULT_CREATE_FLAGS 0
 
+enum
+{
+  /* signals */
+  SIGNAL_SUSPENDED,
+  LAST_SIGNAL
+};
+
+static guint gst_d3d11_device_signals[LAST_SIGNAL] = { 0, };
+
 /* *INDENT-OFF* */
 struct _GstD3D11DevicePrivate
 {
@@ -128,6 +137,7 @@ struct _GstD3D11DevicePrivate
   gchar *description = nullptr;
   guint create_flags = 0;
   gint64 adapter_luid = 0;
+  gboolean suspended;
 
   ID3D11Device *device = nullptr;
   ID3D11Device4 *device4 = nullptr;
@@ -454,6 +464,20 @@ gst_d3d11_device_class_init (GstD3D11DeviceClass * klass)
       G_MININT32, G_MAXINT32, 0, readable_flags);
   g_object_class_install_property (gobject_class, PROP_DEVICE_REMOVED_REASON,
       pspec_removed_reason);
+
+  /**
+   * GstD3D11Device::suspended:
+   * @device: the #d3d11device
+   *
+   * Emitted when the D3D11Device gets suspended by the DirectX (error
+   * DXGI_ERROR_DEVICE_REMOVED have been returned from some of the DirectX
+   * operations).
+   *
+   * Since: cemtrex patch to 1.22.4
+   */
+  gst_d3d11_device_signals[SIGNAL_SUSPENDED] =
+    g_signal_new ("suspended", G_TYPE_FROM_CLASS(klass), G_SIGNAL_RUN_LAST,
+      0, NULL, NULL, NULL, G_TYPE_NONE, 0, G_TYPE_NONE);
 
   gst_d3d11_memory_init_once ();
 }
@@ -1490,6 +1514,28 @@ gst_d3d11_device_get_format (GstD3D11Device * device, GstVideoFormat format,
     *device_format = target->second;
 
   return TRUE;
+}
+
+void
+gst_d3d11_device_mark_suspended (GstD3D11Device* device)
+{
+  g_return_if_fail (GST_IS_D3D11_DEVICE (device));
+
+  if (!device->priv->suspended) {
+    HRESULT reason;
+    gchar* error_text = NULL;
+
+    reason = device->priv->device->GetDeviceRemovedReason ();
+    error_text = g_win32_error_message ((guint)reason);
+    GST_ERROR_OBJECT (device, "D3D11Device have been suspended. Reason: 0x%x, %s",
+      reason, error_text);
+    g_critical ("D3D11Device suspended");
+    g_free (error_text);
+
+    g_signal_emit (device, gst_d3d11_device_signals[SIGNAL_SUSPENDED], 0,
+      NULL);
+    device->priv->suspended = TRUE;
+  }
 }
 
 GST_DEFINE_MINI_OBJECT_TYPE (GstD3D11Fence, gst_d3d11_fence);

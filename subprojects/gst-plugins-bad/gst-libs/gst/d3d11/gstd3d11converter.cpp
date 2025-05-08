@@ -262,6 +262,7 @@ enum
   PROP_DEST_MASTERING_DISPLAY_INFO,
   PROP_DEST_CONTENT_LIGHT_LEVEL,
   PROP_VIDEO_DIRECTION,
+  PROP_BILINEAR_FILTERING,
 };
 
 struct _GstD3D11ConverterPrivate
@@ -405,6 +406,7 @@ struct _GstD3D11ConverterPrivate
       GST_D3D11_CONVERTER_ALPHA_MODE_UNSPECIFIED;
   GstD3D11ConverterAlphaMode dst_alpha_mode =
       GST_D3D11_CONVERTER_ALPHA_MODE_UNSPECIFIED;
+  gboolean bilinear_filtering;
 };
 
 static void gst_d3d11_converter_set_property (GObject * object, guint prop_id,
@@ -482,6 +484,9 @@ gst_d3d11_converter_class_init (GstD3D11ConverterClass * klass)
       g_param_spec_boolean ("fill-border", "Fill border",
           "Fill border with \"border-color\" if destination rectangle does not "
           "fill the complete destination image", FALSE, param_flags));
+  g_object_class_install_property(object_class, PROP_BILINEAR_FILTERING,
+      g_param_spec_boolean("bilinear-filtering", "bilinear filtering",
+          "Use bilinear filtering on scaling", TRUE, param_flags));
   g_object_class_install_property (object_class, PROP_BORDER_COLOR,
       g_param_spec_uint64 ("border-color", "Border Color",
           "ARGB representation of the border color to use",
@@ -648,6 +653,9 @@ gst_d3d11_converter_set_property (GObject * object, guint prop_id,
       }
       break;
     }
+    case PROP_BILINEAR_FILTERING:
+      priv->bilinear_filtering = g_value_get_boolean(value);
+      break;
     case PROP_BORDER_COLOR:{
       guint64 border_color = g_value_get_uint64 (value);
 
@@ -749,6 +757,9 @@ gst_d3d11_converter_get_property (GObject * object, guint prop_id,
     case PROP_FILL_BORDER:
       g_value_set_boolean (value, priv->fill_border);
       break;
+    case PROP_BILINEAR_FILTERING:
+      g_value_set_boolean(value, priv->bilinear_filtering);
+      break;
     case PROP_BORDER_COLOR:
       g_value_set_uint64 (value, priv->border_color);
       break;
@@ -801,6 +812,7 @@ gst_d3d11_color_convert_setup_shader (GstD3D11Converter * self,
   memset (&subresource, 0, sizeof (subresource));
   memset (&buffer_desc, 0, sizeof (buffer_desc));
 
+  GstD3D11DeviceLockGuard lk(device);
   device_handle = gst_d3d11_device_get_device_handle (device);
 
   hr = gst_d3d11_device_get_sampler (device, sampler_filter, &sampler);
@@ -1873,7 +1885,7 @@ gst_d3d11_converter_setup_processor (GstD3D11Converter * self)
     GST_WARNING_OBJECT (self, "Unknown output DXGI colorspace");
     return FALSE;
   }
-
+  GstD3D11DeviceLockGuard lkd(self->device);
   video_device = gst_d3d11_device_get_video_device_handle (self->device);
   if (!video_device) {
     GST_DEBUG_OBJECT (self, "video device interface is not available");
@@ -1948,7 +1960,6 @@ gst_d3d11_converter_setup_processor (GstD3D11Converter * self)
     return FALSE;
   }
 
-  GstD3D11DeviceLockGuard lk (device);
   /* We don't want auto processing by driver */
   video_context1->VideoProcessorSetStreamAutoProcessingMode
       (processor.Get (), 0, FALSE);
@@ -2070,6 +2081,13 @@ gst_d3d11_converter_new (GstD3D11Device * device, const GstVideoInfo * in_info,
   gst_object_ref_sink (self);
   priv = self->priv;
 
+  if (priv->bilinear_filtering) {
+    sampler_filter = D3D11_FILTER_MIN_MAG_LINEAR_MIP_POINT;
+  }
+  else {
+    sampler_filter = D3D11_FILTER_MIN_MAG_MIP_POINT;
+  }
+
   if (config) {
     gint value;
     gst_structure_get_flags (config, GST_D3D11_CONVERTER_OPT_BACKEND,
@@ -2094,6 +2112,9 @@ gst_d3d11_converter_new (GstD3D11Device * device, const GstVideoInfo * in_info,
         GST_TYPE_D3D11_CONVERTER_ALPHA_MODE, (int *) &priv->src_alpha_mode);
     gst_structure_get_enum (config, GST_D3D11_CONVERTER_OPT_DEST_ALPHA_MODE,
         GST_TYPE_D3D11_CONVERTER_ALPHA_MODE, (int *) &priv->dst_alpha_mode);
+
+    gst_structure_get_boolean(config, GST_D3D11_CONVERTER_BILINEAR_FILTERING,
+      &priv->bilinear_filtering);
 
     gst_structure_free (config);
   }

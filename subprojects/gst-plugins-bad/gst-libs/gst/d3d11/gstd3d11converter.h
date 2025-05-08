@@ -143,6 +143,8 @@ GType gst_d3d11_converter_alpha_mode_get_type (void);
  */
 #define GST_D3D11_CONVERTER_OPT_DEST_ALPHA_MODE "GstD3D11Converter.dest-alpha-mode"
 
+#define GST_D3D11_CONVERTER_BILINEAR_FILTERING "bilinear-filtering"
+
 /**
  * GstD3D11Converter:
  *

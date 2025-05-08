@@ -938,6 +938,7 @@ window_proc (HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
       return DefWindowProcA (hWnd, uMsg, wParam, lParam);
     }
 
+    g_assert(self->internal_hwnd == hWnd);
     gst_d3d11_window_win32_handle_window_proc (self, hWnd, uMsg, wParam,
         lParam);
     g_rec_mutex_unlock (&self->hwnds_lock);

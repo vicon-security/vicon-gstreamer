@@ -29,6 +29,8 @@ G_BEGIN_DECLS
 
 struct _GstD3D11AllocationParams
 {
+  /* Texture description per plane */
+  D3D11_TEXTURE2D_DESC desc[GST_VIDEO_MAX_PLANES];
   GstVideoInfo info;
   GstVideoInfo aligned_info;
   GstD3D11Format d3d11_format;
