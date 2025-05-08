@@ -45,7 +45,6 @@
 #define __GST_RTSPSRC_H__
 
 #include <gst/gst.h>
-#include <gst/base/base.h>
 
 G_BEGIN_DECLS
 
@@ -228,8 +227,6 @@ struct _GstRTSPSrc {
   GstSDPMessage   *sdp;
   gboolean         from_sdp;
   GList           *streams;
-  GMutex           flow_combiner_lock;
-  GstFlowCombiner *flow_combiner;
   GstStructure    *props;
   gboolean         need_activate;
 
