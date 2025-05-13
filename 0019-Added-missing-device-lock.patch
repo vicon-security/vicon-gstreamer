@@ -1,0 +1,178 @@
+From 16e34f7c8510dc0adb9cbc89f29983d67184827a Mon Sep 17 00:00:00 2001
+From: smomin7 <smomin@vicon-security.com>
+Date: Thu, 8 May 2025 13:14:56 +0530
+Subject: [PATCH] Added missing device lock.
+
+---
+ .../sys/d3d11/gstd3d11decoder.cpp             | 28 +++++++++++++------
+ .../sys/d3d11/gstd3d11overlaycompositor.cpp   |  1 +
+ .../sys/d3d11/gstd3d11upload.cpp              | 19 +++++++------
+ .../sys/d3d11/gstd3d11window.cpp              | 16 +++++++----
+ 4 files changed, 42 insertions(+), 22 deletions(-)
+
+diff --git a/subprojects/gst-plugins-bad/sys/d3d11/gstd3d11decoder.cpp b/subprojects/gst-plugins-bad/sys/d3d11/gstd3d11decoder.cpp
+index fd94455a40..8af6eee84f 100644
+--- a/subprojects/gst-plugins-bad/sys/d3d11/gstd3d11decoder.cpp
++++ b/subprojects/gst-plugins-bad/sys/d3d11/gstd3d11decoder.cpp
+@@ -293,6 +293,7 @@ gst_d3d11_decoder_init (GstD3D11Decoder * self)
+ static void
+ gst_d3d11_decoder_clear_resource (GstD3D11Decoder * self)
+ {
++  GstD3D11DeviceLockGuard lkd (self->device);
+   GstD3D11SRWLockGuard lk (&self->lock);
+   if (self->internal_pool) {
+     gst_buffer_pool_set_active (self->internal_pool, FALSE);
+@@ -327,11 +328,13 @@ gst_d3d11_decoder_dispose (GObject * obj)
+ {
+   GstD3D11Decoder *self = GST_D3D11_DECODER (obj);
+ 
+-  gst_d3d11_decoder_reset (self);
+-
+-  GST_D3D11_CLEAR_COM (self->video_device);
+-  GST_D3D11_CLEAR_COM (self->video_context);
++  {
++    GstD3D11DeviceLockGuard lk(self->device);
++    gst_d3d11_decoder_reset(self);
+ 
++    GST_D3D11_CLEAR_COM(self->video_device);
++    GST_D3D11_CLEAR_COM(self->video_context);
++  }
+   gst_clear_object (&self->device);
+ 
+   G_OBJECT_CLASS (parent_class)->dispose (obj);
+@@ -362,6 +365,7 @@ gst_d3d11_decoder_new (GstD3D11Device * device, GstDxvaCodec codec)
+   g_return_val_if_fail (codec > GST_DXVA_CODEC_NONE, nullptr);
+   g_return_val_if_fail (codec < GST_DXVA_CODEC_LAST, nullptr);
+ 
++  GstD3D11DeviceLockGuard lk(device);
+   video_device = gst_d3d11_device_get_video_device_handle (device);
+   if (!video_device) {
+     GST_WARNING_OBJECT (device, "ID3D11VideoDevice is not available");
+@@ -1388,9 +1392,12 @@ gst_d3d11_decoder_new_picture (GstD3D11Decoder * decoder,
+      * headers */
+     gst_video_decoder_negotiate (videodec);
+ 
+-    if (!gst_d3d11_decoder_prepare_output_view_pool (decoder)) {
+-      GST_ERROR_OBJECT (videodec, "Failed to setup internal pool");
+-      return GST_FLOW_ERROR;
++    {
++      GstD3D11DeviceLockGuard lk(decoder->device);
++      if (!gst_d3d11_decoder_prepare_output_view_pool(decoder)) {
++        GST_ERROR_OBJECT(videodec, "Failed to setup internal pool");
++        return GST_FLOW_ERROR;
++      }
+     }
+   } else if (!gst_buffer_pool_set_active (decoder->internal_pool, TRUE)) {
+     GST_ERROR_OBJECT (videodec, "Couldn't set active internal pool");
+@@ -1466,6 +1473,7 @@ gst_d3d11_decoder_crop_and_copy_buffer (GstD3D11Decoder * self,
+     GstBuffer * src, GstBuffer * dst)
+ {
+   GstD3D11Device *device = self->device;
++  GstD3D11DeviceLockGuard lk(device);
+   ID3D11DeviceContext *context =
+       gst_d3d11_device_get_device_context_handle (device);
+   GstD3D11Memory *src_dmem;
+@@ -1504,7 +1512,6 @@ gst_d3d11_decoder_crop_and_copy_buffer (GstD3D11Decoder * self,
+   if (!gst_d3d11_decoder_ensure_staging_texture (self))
+     return FALSE;
+ 
+-  GstD3D11DeviceLockGuard lk (device);
+   if (!gst_video_frame_map (&frame, &self->output_info, dst, GST_MAP_WRITE)) {
+     GST_ERROR_OBJECT (self, "Failed to map output buffer");
+     return FALSE;
+@@ -1659,6 +1666,11 @@ gst_d3d11_decoder_negotiate (GstD3D11Decoder * decoder,
+   info = &decoder->output_info;
+   input_state = decoder->input_state;
+ 
++  if (input_state == nullptr) {
++    GST_WARNING_OBJECT (videodec, "Input state is null");
++    return FALSE;
++  }
++
+   if (!decoder->configured) {
+     GST_WARNING_OBJECT (videodec, "Decoder is not configured");
+     return FALSE;
+diff --git a/subprojects/gst-plugins-bad/sys/d3d11/gstd3d11overlaycompositor.cpp b/subprojects/gst-plugins-bad/sys/d3d11/gstd3d11overlaycompositor.cpp
+index 2f611a8aaf..c53b3e0e5f 100644
+--- a/subprojects/gst-plugins-bad/sys/d3d11/gstd3d11overlaycompositor.cpp
++++ b/subprojects/gst-plugins-bad/sys/d3d11/gstd3d11overlaycompositor.cpp
+@@ -333,6 +333,7 @@ gst_d3d11_overlay_compositor_setup_shader (GstD3D11OverlayCompositor * self)
+   memset (&blend_desc, 0, sizeof (blend_desc));
+   memset (&subresource, 0, sizeof (subresource));
+ 
++  GstD3D11DeviceLockGuard lk(device);
+   device_handle = gst_d3d11_device_get_device_handle (device);
+ 
+   hr = gst_d3d11_device_get_sampler (device,
+diff --git a/subprojects/gst-plugins-bad/sys/d3d11/gstd3d11upload.cpp b/subprojects/gst-plugins-bad/sys/d3d11/gstd3d11upload.cpp
+index c629b57793..0bb3b55b05 100644
+--- a/subprojects/gst-plugins-bad/sys/d3d11/gstd3d11upload.cpp
++++ b/subprojects/gst-plugins-bad/sys/d3d11/gstd3d11upload.cpp
+@@ -332,17 +332,20 @@ gst_d3d11_upload_decide_allocation (GstBaseTransform * trans, GstQuery * query)
+     dxgi_format = d3d11_format.dxgi_format;
+   }
+ 
+-  device_handle = gst_d3d11_device_get_device_handle (filter->device);
+-  hr = device_handle->CheckFormatSupport (dxgi_format, &supported);
+-  if (gst_d3d11_result (hr, filter->device)) {
+-    if ((supported & D3D11_FORMAT_SUPPORT_SHADER_SAMPLE) ==
++  {
++    GstD3D11DeviceLockGuard lk(filter->device);
++    device_handle = gst_d3d11_device_get_device_handle(filter->device);
++    hr = device_handle->CheckFormatSupport(dxgi_format, &supported);
++    if (gst_d3d11_result(hr, filter->device)) {
++      if ((supported & D3D11_FORMAT_SUPPORT_SHADER_SAMPLE) ==
+         D3D11_FORMAT_SUPPORT_SHADER_SAMPLE) {
+-      bind_flags |= D3D11_BIND_SHADER_RESOURCE;
+-    }
++        bind_flags |= D3D11_BIND_SHADER_RESOURCE;
++      }
+ 
+-    if ((supported & D3D11_FORMAT_SUPPORT_RENDER_TARGET) ==
++      if ((supported & D3D11_FORMAT_SUPPORT_RENDER_TARGET) ==
+         D3D11_FORMAT_SUPPORT_RENDER_TARGET) {
+-      bind_flags |= D3D11_BIND_RENDER_TARGET;
++        bind_flags |= D3D11_BIND_RENDER_TARGET;
++      }
+     }
+   }
+ 
+diff --git a/subprojects/gst-plugins-bad/sys/d3d11/gstd3d11window.cpp b/subprojects/gst-plugins-bad/sys/d3d11/gstd3d11window.cpp
+index 107e5b7f76..21514a0144 100644
+--- a/subprojects/gst-plugins-bad/sys/d3d11/gstd3d11window.cpp
++++ b/subprojects/gst-plugins-bad/sys/d3d11/gstd3d11window.cpp
+@@ -289,14 +289,17 @@ gst_d3d11_window_dispose (GObject * object)
+ {
+   GstD3D11Window *self = GST_D3D11_WINDOW (object);
+ 
+-  gst_clear_buffer (&self->backbuffer);
+-  GST_D3D11_CLEAR_COM (self->swap_chain);
++  {
++    GstD3D11DeviceLockGuard lk (self->device);
++    gst_clear_buffer (&self->backbuffer);
++    GST_D3D11_CLEAR_COM (self->swap_chain);
+ 
+-  gst_clear_object (&self->compositor);
+-  gst_clear_object (&self->converter);
++    gst_clear_object (&self->compositor);
++    gst_clear_object (&self->converter);
+ 
+-  gst_clear_buffer (&self->msaa_buffer);
+-  gst_clear_buffer (&self->cached_buffer);
++    gst_clear_buffer (&self->msaa_buffer);
++    gst_clear_buffer (&self->cached_buffer);
++  }
+   gst_clear_object (&self->device);
+ 
+   G_OBJECT_CLASS (parent_class)->dispose (object);
+@@ -659,6 +662,7 @@ gst_d3d11_window_prepare_default (GstD3D11Window * window, guint display_width,
+    * Otherwise, use DXGI_FORMAT_B8G8R8A8_UNORM or DXGI_FORMAT_B8G8R8A8_UNORM
+    */
+   gst_video_info_from_caps (&window->info, caps);
++  GstD3D11DeviceLockGuard lkd(device);
+   device_handle = gst_d3d11_device_get_device_handle (device);
+   for (guint i = 0; i < G_N_ELEMENTS (formats); i++) {
+     hr = device_handle->CheckFormatSupport (formats[i].dxgi_format,
+-- 
+2.40.1.windows.1
+
