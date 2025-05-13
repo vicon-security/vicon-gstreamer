@@ -1,0 +1,13 @@
+name: Trigger Jenkins
+on:
+  push:
+    branches:
+      - 'vicon-patches'
+
+jobs:
+  Jenkins_Job:
+    name: Build gstreamer-1.26.0 Branch
+    runs-on: self-hosted
+    steps:
+      - name: Step 1 - Post to jenkins
+        run: curl.exe -X POST "http://build:11ae983652068d3bdd54dfb6a552a193eb@192.168.1.156:8080/job/Gstreamer1.26/build"
