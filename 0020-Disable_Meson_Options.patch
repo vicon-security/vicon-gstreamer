@@ -1,0 +1,53 @@
+diff --git a/meson_options.txt b/meson_options.txt
+index d73d9cce34..8e8d0c9bb0 100644
+--- a/meson_options.txt
++++ b/meson_options.txt
+@@ -4,19 +4,19 @@ option('good', type : 'feature', value : 'enabled')
+ option('ugly', type : 'feature', value : 'enabled')
+ option('bad', type : 'feature', value : 'enabled')
+ option('libav', type : 'feature', value : 'auto')
+-option('devtools', type : 'feature', value : 'auto')
+-option('ges', type : 'feature', value : 'auto')
++option('devtools', type : 'feature', value : 'disabled')
++option('ges', type : 'feature', value : 'disabled')
+ option('rtsp_server', type : 'feature', value : 'auto')
+ option('rs', type : 'feature', value : 'disabled')
+ option('vaapi', type : 'feature', value : 'disabled')
+-option('gst-examples', type : 'feature', value : 'auto', description : 'Build gst-examples subproject')
++option('gst-examples', type : 'feature', value : 'disabled', description : 'Build gst-examples subproject')
+ # Bindings
+-option('python', type : 'feature', value : 'auto')
+-option('python-exe', type: 'string', value: 'python3', description: 'Path or name of the Python interpreter to build for')
++option('python', type : 'feature', value : 'disabled')
++option('python-exe', type: 'string', value: 'disabled', description: 'Path or name of the Python interpreter to build for')
+ option('sharp', type : 'feature', value : 'disabled')
+ # External subprojects
+-option('tls', type : 'feature', value : 'auto', description : 'TLS support using glib-networking as a subproject')
+-option('libnice', type : 'feature', value : 'auto', description: 'ICE support using libnice as a subproject')
++option('tls', type : 'feature', value : 'disabled', description : 'TLS support using glib-networking as a subproject')
++option('libnice', type : 'feature', value : 'disabled', description: 'ICE support using libnice as a subproject')
+ option('gtk', type: 'feature', value: 'disabled', description: 'Build GTK4 as a subproject')
+ 
+ # Build for fuzzing
+@@ -61,9 +61,9 @@ option('extra-checks', type : 'feature', value : 'enabled', description : 'Enabl
+ option('benchmarks', type : 'feature', value : 'auto')
+ option('tools', type : 'feature', value : 'auto', yield : true, description : 'Build command line tools')
+ option('orc', type : 'feature', value : 'auto', description : 'Optimized Inner Loop Runtime Compiler (SIMD)')
+-option('qt5', type : 'feature', value : 'auto', description : 'Qt5 toolkit support')
+-option('qt6', type : 'feature', value : 'auto', description : 'Qt6 toolkit support')
+-option('webrtc', type : 'feature', value : 'auto', description : 'WebRTC support')
++option('qt5', type : 'feature', value : 'disabled', description : 'Qt5 toolkit support')
++option('qt6', type : 'feature', value : 'disabled', description : 'Qt6 toolkit support')
++option('webrtc', type : 'feature', value : 'disabled', description : 'WebRTC support')
+ 
+ # Common options shared by other projects, automatically inherited by subprojects.
+ option('glib_debug', type : 'feature', value : 'auto', yield : true, description : 'Enable GLib debug infrastructure (see docs/macros.txt)')
+@@ -75,7 +75,7 @@ option('glib_checks', type : 'boolean', value : true, yield : true, description
+ )
+ option('tests', type : 'feature', value : 'auto', description : 'Build tests')
+ option('examples', type : 'feature', value : 'auto', description : 'Build examples')
+-option('introspection', type : 'feature', value : 'auto', description : 'Generate introspection data')
++option('introspection', type : 'feature', value : 'disabled', description : 'Generate introspection data')
+ option('nls', type : 'feature', value : 'auto', description : 'Native language support (translations)')
+ option('doc', type : 'feature', value : 'disabled', description : 'Generate API documentation with hotdoc')
+ option('gtk_doc', type : 'feature', value : 'disabled', description : 'Generate API documentation with gtk-doc')
