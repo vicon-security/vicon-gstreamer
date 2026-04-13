@@ -3,7 +3,7 @@
 // IMV1.h - header of the IMV1-SDK API							//
 // -----------------------------------							//
 //																//
-// Rev: 2.4.5.1													//
+// Rev: 3.0.2.0													//
 //																//
 // Copyright 2000-2018 ImmerVision Canada Inc.					//
 //																//
@@ -186,7 +186,7 @@ public :
 	IMV_CameraInterface() ;
 	~IMV_CameraInterface() ;
 	unsigned long CheckCameraType( IMV_Buffer *buffer, unsigned long rgbFormat) ;
-
+	static unsigned long StaticAddLens(char* LensDefinitionStr);
 	char* GetACS();
 	unsigned long GetACSStatus() ;
 	char* GetACSStatusString(int eACSStatusCode) ;
@@ -268,6 +268,10 @@ public :
 	// Static Methods
 	static int StaticGetLensDescriptionCount();
 	static const SLensDescription* StaticGetLensDescription();
+	
+
+	unsigned long SetFoV(float);
+
 } ;
 
 class IMV_CameraFlatSurfaceInterface: public IMV_CameraInterface
