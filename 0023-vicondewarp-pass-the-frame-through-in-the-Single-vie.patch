@@ -1,0 +1,87 @@
+From 642c14440f33fb0057b84751c5d79ef706df4b93 Mon Sep 17 00:00:00 2001
+From: Nithesh Nagaraj <nnagaraj@vicon-security.com>
+Date: Sun, 27 Sep 2026 18:46:19 -0400
+Subject: [PATCH] vicondewarp: pass the frame through in the Single view at
+ full zoom
+
+The Single view at full zoom (PTZ, zoom 179) shows the whole lens circle, so
+push the frame on untouched instead of dewarping it. This keeps the camera's
+OSD and skips IMV's ~37 ms per frame. All other views are dewarped as before.
+---
+ .../cemtrex/gstvicondewarp.cpp                | 25 ++++++++++++++++++-
+ .../gst-plugins-bad/cemtrex/gstvicondewarp.h  |  2 ++
+ 2 files changed, 26 insertions(+), 1 deletion(-)
+
+diff --git a/subprojects/gst-plugins-bad/cemtrex/gstvicondewarp.cpp b/subprojects/gst-plugins-bad/cemtrex/gstvicondewarp.cpp
+index 458e1c1e99..82baf8ae82 100644
+--- a/subprojects/gst-plugins-bad/cemtrex/gstvicondewarp.cpp
++++ b/subprojects/gst-plugins-bad/cemtrex/gstvicondewarp.cpp
+@@ -173,7 +173,7 @@ GstBuffer* InputOutputBuffers::outputTransferFull()
+ }
+
+ DewarpPlugin::DewarpPlugin() : m_mountPos{ 0 }, m_viewType{ 0 }, m_data{ 0 }, m_camera{ new IMV_CameraInterface() },
+-m_isCameraSetup{ false }, m_isLensCalibrated{ false }
++m_isCameraSetup{ false }, m_isLensCalibrated{ false }, m_isPassingThroughFullView{ false }
+ {
+ 	GST_DEBUG_CATEGORY_INIT(gst_vicondewarp_debug, "vicon_dewarp", 0, "viconMsg");
+ }
+@@ -325,6 +325,24 @@ bool DewarpPlugin::calibrateLens(std::string format, int width, int height, GstC
+ 	return false;
+ }
+
++/* Single view at full zoom: pass the frame through instead of dewarping. */
++static constexpr float kFullViewZoomDeg = 179.0f;
++
++bool DewarpPlugin::passesThroughFullView()
++{
++	bool isFullView = false;
++	{
++		std::lock_guard<std::mutex> renderLock(m_render);
++		isFullView = m_viewType == IMV_Defs::E_VTYPE_PTZ && m_data[0].m_zoom >= kFullViewZoomDeg;
++	}
++	if (isFullView != m_isPassingThroughFullView)
++	{
++		GST_INFO("%s", isFullView ? "Single view at full zoom: passing frames through" : "dewarping frames");
++		m_isPassingThroughFullView = isFullView;
++	}
++	return isFullView;
++}
++
+ bool DewarpPlugin::setUpCamera(std::string format, int width, int height, GstBuffer* originalInputBuffer)
+ {
+ 	auto result = m_camera->SetVideoParams(m_buffers.in(), m_buffers.out(), string2ColorFormat(format), m_viewType, m_mountPos);
+@@ -647,6 +665,11 @@ gst_vicondewarp_chain(GstPad* pad, GstObject* parent, GstBuffer* buffer)
+ 	{
+ 		if (thiz != nullptr && thiz->plugin != nullptr)
+ 		{
++      if (thiz->plugin->passesThroughFullView())
++      {
++        return gst_pad_push(thiz->srcpad, buffer);
++      }
++
+       GstFlowReturn flow_return;
+
+       flow_return = thiz->plugin->chain(thiz->srcpad, thiz->inputCaps, buffer);
+diff --git a/subprojects/gst-plugins-bad/cemtrex/gstvicondewarp.h b/subprojects/gst-plugins-bad/cemtrex/gstvicondewarp.h
+index facc7727c2..9ba2a4d2e3 100644
+--- a/subprojects/gst-plugins-bad/cemtrex/gstvicondewarp.h
++++ b/subprojects/gst-plugins-bad/cemtrex/gstvicondewarp.h
+@@ -46,6 +46,7 @@ public:
+ 	~DewarpPlugin();
+   GstFlowReturn chain(GstPad* pad, GstCaps* inputCaps, GstBuffer* buffer);
+ 	void setPosition();
++	bool passesThroughFullView();
+
+ 	void setProperties(const GstStructure* properties);
+ 	void setMountPos(int mountPos);
+@@ -78,6 +79,7 @@ private:
+ 	std::string m_acsInfo;
+ 	bool m_isCameraSetup;
+ 	bool m_isLensCalibrated;
++	bool m_isPassingThroughFullView;
+
+ 	std::mutex m_render;
+
+--
+2.54.0.windows.1
+
