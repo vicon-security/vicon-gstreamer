@@ -7,6 +7,8 @@
 #include <gst/gst.h>
 #include <memory>
 #include <mutex>
+#include <vector>
+#include <set>
 #include "IMV1.h"
 
 
@@ -18,7 +20,8 @@ public:
 
 	void reset();
 
-	bool setInputBuffer(GstBuffer* inputBuffer, int width, int height);
+  bool setInputBuffer(GstBuffer* inputBuffer, GstCaps* caps, const std::string format, int width, int height);
+  void logStrideInfo(GstVideoFrame* vframe, int width, int bpp);
 
 	IMV_Buffer* in();
 	IMV_Buffer* out();
@@ -37,6 +40,7 @@ private:
 	GstBuffer* m_inputBuffer;
 	int m_width;
 	int m_height;
+  std::vector<guint8> m_inputPacked, m_outputPacked;
 };
 
 class DewarpPlugin
