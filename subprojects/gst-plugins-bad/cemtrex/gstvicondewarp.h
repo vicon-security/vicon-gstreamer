@@ -46,6 +46,7 @@ public:
 	~DewarpPlugin();
   GstFlowReturn chain(GstPad* pad, GstCaps* inputCaps, GstBuffer* buffer);
 	void setPosition();
+	bool passesThroughFullView();
 
 	void setProperties(const GstStructure* properties);
 	void setMountPos(int mountPos);
@@ -78,6 +79,7 @@ private:
 	std::string m_acsInfo;
 	bool m_isCameraSetup;
 	bool m_isLensCalibrated;
+	bool m_isPassingThroughFullView;
 
 	std::mutex m_render;
 

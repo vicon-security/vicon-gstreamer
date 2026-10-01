@@ -173,7 +173,7 @@ GstBuffer* InputOutputBuffers::outputTransferFull()
 }
 
 DewarpPlugin::DewarpPlugin() : m_mountPos{ 0 }, m_viewType{ 0 }, m_data{ 0 }, m_camera{ new IMV_CameraInterface() },
-m_isCameraSetup{ false }, m_isLensCalibrated{ false }
+m_isCameraSetup{ false }, m_isLensCalibrated{ false }, m_isPassingThroughFullView{ false }
 {
 	GST_DEBUG_CATEGORY_INIT(gst_vicondewarp_debug, "vicon_dewarp", 0, "viconMsg");
 }
@@ -323,6 +323,24 @@ bool DewarpPlugin::calibrateLens(std::string format, int width, int height, GstC
 	}
 
 	return false;
+}
+
+/* Single view at full zoom: pass the frame through instead of dewarping. */
+static constexpr float kFullViewZoomDeg = 179.0f;
+
+bool DewarpPlugin::passesThroughFullView()
+{
+	bool isFullView = false;
+	{
+		std::lock_guard<std::mutex> renderLock(m_render);
+		isFullView = m_viewType == IMV_Defs::E_VTYPE_PTZ && m_data[0].m_zoom >= kFullViewZoomDeg;
+	}
+	if (isFullView != m_isPassingThroughFullView)
+	{
+		GST_INFO("%s", isFullView ? "Single view at full zoom: passing frames through" : "dewarping frames");
+		m_isPassingThroughFullView = isFullView;
+	}
+	return isFullView;
 }
 
 bool DewarpPlugin::setUpCamera(std::string format, int width, int height, GstBuffer* originalInputBuffer)
@@ -647,6 +665,11 @@ gst_vicondewarp_chain(GstPad* pad, GstObject* parent, GstBuffer* buffer)
 	{
 		if (thiz != nullptr && thiz->plugin != nullptr)
 		{
+      if (thiz->plugin->passesThroughFullView())
+      {
+        return gst_pad_push(thiz->srcpad, buffer);
+      }
+
       GstFlowReturn flow_return;
 
       flow_return = thiz->plugin->chain(thiz->srcpad, thiz->inputCaps, buffer);
