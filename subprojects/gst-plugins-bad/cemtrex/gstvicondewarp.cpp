@@ -7,10 +7,19 @@
 #include <gst/gst.h>
 #include <gst/video/video-info.h>
 #include <gst/video/video.h>
+#include <gst/video/video-frame.h>
 #include "gstvicondewarp.h"
 
 GST_DEBUG_CATEGORY_STATIC(gst_vicondewarp_debug);
 #define GST_CAT_DEFAULT gst_vicondewarp_debug
+
+// Returns bytes-per-pixel for the formats this plugin supports
+static int bytesPerPixelForFormat(const std::string& format)
+{
+  if (format == "RGBA") return 4;
+  if (format == "NV12") return 1; // handled specially below (Y plane bpp=1, UV plane is separate)
+  return 4; // I420 fallback - see note below, treat per-plane if needed
+}
 
 void saveToPNG(const char* fileName, GstCaps* from_caps, GstBuffer* buf)
 {
@@ -94,51 +103,104 @@ void InputOutputBuffers::reset()
   }
 }
 
-bool InputOutputBuffers::setInputBuffer(GstBuffer* inputBuffer, int width, int height)
+void InputOutputBuffers::logStrideInfo(GstVideoFrame* vframe, int width, int bpp)
+{
+  static std::set<int> loggedWidths; // widths we've already reported on
+
+  if (loggedWidths.count(width) > 0)
+    return; // already logged this width, skip
+
+  loggedWidths.insert(width);
+
+  int strideActual = GST_VIDEO_FRAME_PLANE_STRIDE(vframe, 0);
+  int strideTight = width * bpp;
+  int paddingBytes = strideActual - strideTight;
+  bool isPadded = (paddingBytes != 0);
+
+  GST_ERROR("vicondewarp stride check: width=%d bpp=%d tight_stride=%d actual_stride=%d "
+    "padding=%d bytes/row -> %s (fast-path %s)",
+    width, bpp, strideTight, strideActual, paddingBytes,
+    isPadded ? "PADDED - repack required" : "TIGHTLY PACKED - no repack needed",
+    isPadded ? "SKIPPED" : "USED");
+}
+
+bool InputOutputBuffers::setInputBuffer(GstBuffer* inputBuffer, GstCaps* caps, const std::string format, int width, int height)
 {
 	m_width = width;
 	m_height = height;
   reset();
-	m_inputBuffer = gst_buffer_ref (inputBuffer);
+  m_inputBuffer = gst_buffer_ref(inputBuffer);
 
-	if (gst_buffer_map(inputBuffer, &m_inputMap, (GstMapFlags)(GST_MAP_READ)) == FALSE)
-	{
-		return false;
-	}
+  GstVideoInfo vinfo;
+  if (!gst_video_info_from_caps(&vinfo, caps))
+  {
+    return false;
+  }
 
-	m_outputBuffer = gst_buffer_new_allocate(NULL, m_inputMap.size, NULL);
+  GstVideoFrame vframe;
+  if (!gst_video_frame_map(&vframe, &vinfo, inputBuffer, GST_MAP_READ))
+  {
+    return false;
+  }
 
-	if (m_outputBuffer == nullptr)
-	{
-		return false;
-	}
+  int bpp = bytesPerPixelForFormat(format);
 
-	if (gst_buffer_map(m_outputBuffer, &m_outputMap, (GstMapFlags)(GST_MAP_WRITE)) == FALSE)
-	{
-		reset();
-		return false;
-	}
+  logStrideInfo(&vframe, width, bpp);
 
-	m_outputBuffer->pts = inputBuffer->pts;
-	m_outputBuffer->dts = inputBuffer->dts;
+  int strideIn = GST_VIDEO_FRAME_PLANE_STRIDE(&vframe, 0);
+  int tightRowBytes = width * bpp;
 
-	m_in->frameX = 0;
-	m_in->frameY = 0;
-	m_in->width = width;
-	m_in->height = height;
-	m_in->frameWidth = width;
-	m_in->frameHeight = height;
-	m_in->data = m_inputMap.data;
+  // Allocate a tightly packed input buffer for IMV_Buffer regardless of source stride
+  m_inputPacked.resize((size_t)tightRowBytes * height);
 
-	m_out->frameX = 0;
-	m_out->frameY = 0;
-	m_out->width = width;
-	m_out->height = height;
-	m_out->frameWidth = width;
-	m_out->frameHeight = height;
-	m_out->data = m_outputMap.data;
+  const guint8* src = (const guint8*)GST_VIDEO_FRAME_PLANE_DATA(&vframe, 0);
+  if (strideIn == tightRowBytes)
+  {
+    // Already tightly packed - one fast copy
+    memcpy(m_inputPacked.data(), src, (size_t)tightRowBytes * height);
+  }
+  else
+  {
+    // Padded/strided source (common on D3D11 surfaces) - copy row by row
+    for (int row = 0; row < height; row++)
+    {
+      memcpy(m_inputPacked.data() + (size_t)row * tightRowBytes,
+        src + (size_t)row * strideIn,
+        tightRowBytes);
+    }
+  }
 
-	return true;
+  gst_video_frame_unmap(&vframe);
+
+  // Output buffer: keep it tightly packed too, matching what IMV_Buffer expects
+  m_outputPacked.resize((size_t)tightRowBytes * height);
+
+  m_outputBuffer = gst_buffer_new_allocate(NULL, (size_t)tightRowBytes * height, NULL);
+  if (m_outputBuffer == nullptr)
+  {
+    return false;
+  }
+
+  m_outputBuffer->pts = inputBuffer->pts;
+  m_outputBuffer->dts = inputBuffer->dts;
+
+  m_in->frameX = 0;
+  m_in->frameY = 0;
+  m_in->width = width;
+  m_in->height = height;
+  m_in->frameWidth = width;
+  m_in->frameHeight = height;
+  m_in->data = m_inputPacked.data();       // tightly packed, guaranteed
+
+  m_out->frameX = 0;
+  m_out->frameY = 0;
+  m_out->width = width;
+  m_out->height = height;
+  m_out->frameWidth = width;
+  m_out->frameHeight = height;
+  m_out->data = m_outputPacked.data();     // tightly packed, guaranteed
+
+  return true;
 }
 
 IMV_Buffer* InputOutputBuffers::in()
@@ -163,13 +225,16 @@ int InputOutputBuffers::height()
 
 GstBuffer* InputOutputBuffers::outputTransferFull()
 {
+  GstMapInfo outMap;
+  gst_buffer_map(m_outputBuffer, &outMap, GST_MAP_WRITE);
+  memcpy(outMap.data, m_outputPacked.data(), m_outputPacked.size());
+  gst_buffer_unmap(m_outputBuffer, &outMap);
+
   GstBuffer* outputBuffer = m_outputBuffer;
-	gst_buffer_unmap(m_outputBuffer, &m_outputMap);
-	gst_buffer_unmap(m_inputBuffer, &m_inputMap);
-	gst_buffer_unref(m_inputBuffer);
-	m_outputBuffer = nullptr;
-	m_inputBuffer = nullptr;
-	return outputBuffer;
+  gst_buffer_unref(m_inputBuffer);
+  m_outputBuffer = nullptr;
+  m_inputBuffer = nullptr;
+  return outputBuffer;
 }
 
 DewarpPlugin::DewarpPlugin() : m_mountPos{ 0 }, m_viewType{ 0 }, m_data{ 0 }, m_camera{ new IMV_CameraInterface() },
@@ -275,7 +340,7 @@ bool DewarpPlugin::calibrateLens(std::string format, int width, int height, GstC
 
   if (colorFormat == IMV_Defs::E_RGBA_32_STD)
   {
-    if (!m_buffers.setInputBuffer(originalInputBuffer, width, height))
+    if (!m_buffers.setInputBuffer(originalInputBuffer, caps, format, width, height))
       return false;
   }
   else
@@ -295,7 +360,7 @@ bool DewarpPlugin::calibrateLens(std::string format, int width, int height, GstC
       if (toSample == nullptr)
         break;
 
-      ok = m_buffers.setInputBuffer(gst_sample_get_buffer(toSample), width, height);
+      ok = m_buffers.setInputBuffer(gst_sample_get_buffer(toSample), caps, format, width, height);
     } while (0);
 
     if (toSample)
@@ -397,7 +462,7 @@ GstFlowReturn DewarpPlugin::chain(GstPad* pad, GstCaps* inputCaps, GstBuffer* in
 	}
 	else
 	{
-		if (!m_buffers.setInputBuffer(inputBuffer, width, height))
+		if (!m_buffers.setInputBuffer(inputBuffer, inputCaps, bufferFormat, width, height))
 		{
 			return GST_FLOW_CUSTOM_ERROR_2;
 		}
