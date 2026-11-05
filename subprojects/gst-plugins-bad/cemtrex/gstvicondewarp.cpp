@@ -3,23 +3,18 @@
  * support@fluendo.com
  */
 #include "config.h"
+#include <cstring>
 #include <iostream>
 #include <gst/gst.h>
 #include <gst/video/video-info.h>
 #include <gst/video/video.h>
-#include <gst/video/video-frame.h>
 #include "gstvicondewarp.h"
 
 GST_DEBUG_CATEGORY_STATIC(gst_vicondewarp_debug);
 #define GST_CAT_DEFAULT gst_vicondewarp_debug
 
-// Returns bytes-per-pixel for the formats this plugin supports
-static int bytesPerPixelForFormat(const std::string& format)
-{
-  if (format == "RGBA") return 4;
-  if (format == "NV12") return 1; // handled specially below (Y plane bpp=1, UV plane is separate)
-  return 4; // I420 fallback - see note below, treat per-plane if needed
-}
+static const char* const kRgbaFormat = "RGBA";
+static const char* const kNv12Format = "NV12";
 
 void saveToPNG(const char* fileName, GstCaps* from_caps, GstBuffer* buf)
 {
@@ -46,9 +41,14 @@ bool getCapsInfo(GstCaps* caps, std::string& bufferFormat, int& width, int& heig
 		return false;
 	}
 
-	bufferFormat = gst_structure_get_string(capsInfo, "format");
+	const gchar* format = gst_structure_get_string(capsInfo, "format");
+	if (format == nullptr) {
+		return false;
+	}
+
+	bufferFormat = format;
 	auto res = gst_structure_get_int(capsInfo, "width", &width);
-	res |= gst_structure_get_int(capsInfo, "height", &height);
+	res &= gst_structure_get_int(capsInfo, "height", &height);
 
 #ifdef VICON_DEBUG_LIBRARY
 	std::string strCaps = gst_caps_to_string(caps);
@@ -62,12 +62,12 @@ auto string2ColorFormat(const std::string& format)
 {
 	auto colorFormat = IMV_Defs::E_YUV_I420_STD;
 
-	if (format == "RGBA")
+	if (format == kRgbaFormat)
 	{
 		colorFormat = IMV_Defs::E_RGBA_32_STD;
 	}
 
-	if (format == "NV12")
+	if (format == kNv12Format)
 	{
 		colorFormat = IMV_Defs::E_YUV_NV12_STD;
 	}
@@ -77,7 +77,7 @@ auto string2ColorFormat(const std::string& format)
 
 InputOutputBuffers::InputOutputBuffers() :
 	m_in{ new IMV_Buffer() }, m_out{ new IMV_Buffer() }, m_outputBuffer{ nullptr }, m_inputBuffer{ nullptr },
-	m_width{ 0 }, m_height{ 0 }, m_inputMap{ 0 }, m_outputMap{ 0 }
+	m_width{ 0 }, m_height{ 0 }, m_inputMap{ 0 }, m_outputMap{ 0 }, m_hasReportedUnsupportedInput{ false }
 {
 }
 
@@ -103,104 +103,145 @@ void InputOutputBuffers::reset()
   }
 }
 
-void InputOutputBuffers::logStrideInfo(GstVideoFrame* vframe, int width, int bpp)
+/* Plane 0 layout from the GstVideoMeta, else the caps' packed layout. IMV has no row pitch, so padded rows (such as a
+ * D3D12 readback) are accepted for RGBA only, to be repacked; a meta that does not match the caps is refused. */
+static bool resolveInputLayout(GstBuffer* buffer, const GstVideoInfo& info, gsize& offset, gsize& stride)
 {
-  static std::set<int> loggedWidths; // widths we've already reported on
+	offset = GST_VIDEO_INFO_PLANE_OFFSET(&info, 0);
+	stride = GST_VIDEO_INFO_PLANE_STRIDE(&info, 0);
+	GstVideoMeta* meta = gst_buffer_get_video_meta(buffer);
+	if (meta == nullptr)
+	{
+		return true;
+	}
 
-  if (loggedWidths.count(width) > 0)
-    return; // already logged this width, skip
+	if (meta->format != GST_VIDEO_INFO_FORMAT(&info) || meta->width < GST_VIDEO_INFO_WIDTH(&info) ||
+		meta->height < GST_VIDEO_INFO_HEIGHT(&info))
+	{
+		return false;
+	}
 
-  loggedWidths.insert(width);
+	bool isDefaultLayout = meta->n_planes == GST_VIDEO_INFO_N_PLANES(&info);
+	for (guint plane = 0; isDefaultLayout && plane < meta->n_planes; ++plane)
+	{
+		isDefaultLayout = meta->offset[plane] == GST_VIDEO_INFO_PLANE_OFFSET(&info, plane) &&
+			meta->stride[plane] == GST_VIDEO_INFO_PLANE_STRIDE(&info, plane);
+	}
+	if (isDefaultLayout)
+	{
+		return true;
+	}
 
-  int strideActual = GST_VIDEO_FRAME_PLANE_STRIDE(vframe, 0);
-  int strideTight = width * bpp;
-  int paddingBytes = strideActual - strideTight;
-  bool isPadded = (paddingBytes != 0);
+	if (GST_VIDEO_INFO_FORMAT(&info) != GST_VIDEO_FORMAT_RGBA || meta->stride[0] <= 0)
+	{
+		return false;
+	}
 
-  GST_ERROR("vicondewarp stride check: width=%d bpp=%d tight_stride=%d actual_stride=%d "
-    "padding=%d bytes/row -> %s (fast-path %s)",
-    width, bpp, strideTight, strideActual, paddingBytes,
-    isPadded ? "PADDED - repack required" : "TIGHTLY PACKED - no repack needed",
-    isPadded ? "SKIPPED" : "USED");
+	offset = meta->offset[0];
+	stride = static_cast<gsize>(meta->stride[0]);
+	return true;
 }
 
-bool InputOutputBuffers::setInputBuffer(GstBuffer* inputBuffer, GstCaps* caps, const std::string format, int width, int height)
+void InputOutputBuffers::reportUnsupportedInput(const std::string& format, gsize stride)
+{
+	if (m_hasReportedUnsupportedInput)
+	{
+		return;
+	}
+
+	GST_WARNING("Unsupported input %s %dx%d (%" G_GSIZE_FORMAT " bytes, plane 0 stride %" G_GSIZE_FORMAT
+		"), passing frames through undewarped", format.c_str(), m_width, m_height,
+		m_inputBuffer != nullptr ? m_inputMap.size : 0, stride);
+	m_hasReportedUnsupportedInput = true;
+}
+
+bool InputOutputBuffers::setInputBuffer(GstBuffer* inputBuffer, const std::string& format, int width, int height)
 {
 	m_width = width;
 	m_height = height;
   reset();
-  m_inputBuffer = gst_buffer_ref(inputBuffer);
 
-  GstVideoInfo vinfo;
-  if (!gst_video_info_from_caps(&vinfo, caps))
-  {
-    return false;
-  }
+	GstVideoInfo info;
+	const GstVideoFormat videoFormat = gst_video_format_from_string(format.c_str());
+	if (width <= 0 || height <= 0 || videoFormat == GST_VIDEO_FORMAT_UNKNOWN ||
+		!gst_video_info_set_format(&info, videoFormat, width, height))
+	{
+		reportUnsupportedInput(format, 0);
+		return false;
+	}
 
-  GstVideoFrame vframe;
-  if (!gst_video_frame_map(&vframe, &vinfo, inputBuffer, GST_MAP_READ))
-  {
-    return false;
-  }
+	if (gst_buffer_map(inputBuffer, &m_inputMap, (GstMapFlags)(GST_MAP_READ)) == FALSE)
+	{
+		return false;
+	}
+	m_inputBuffer = gst_buffer_ref(inputBuffer);
 
-  int bpp = bytesPerPixelForFormat(format);
+	gsize offset = 0;
+	gsize stride = 0;
+	const bool hasSupportedLayout = resolveInputLayout(inputBuffer, info, offset, stride);
+	const gsize rowBytes = static_cast<gsize>(width) * static_cast<gsize>(GST_VIDEO_INFO_COMP_PSTRIDE(&info, 0));
+	const bool isPacked = offset == GST_VIDEO_INFO_PLANE_OFFSET(&info, 0) &&
+		stride == static_cast<gsize>(GST_VIDEO_INFO_PLANE_STRIDE(&info, 0));
+	const gsize mapSize = m_inputMap.size;
+	/* Overflow-safe: the last row must end inside the mapping. */
+	const bool fitsInMap = isPacked ? mapSize >= GST_VIDEO_INFO_SIZE(&info) :
+		stride >= rowBytes && offset <= mapSize && rowBytes <= mapSize - offset &&
+		(mapSize - offset - rowBytes) / stride >= static_cast<gsize>(height - 1);
+	if (!hasSupportedLayout || !fitsInMap)
+	{
+		reportUnsupportedInput(format, stride);
+		reset();
+		return false;
+	}
+	m_hasReportedUnsupportedInput = false;
 
-  logStrideInfo(&vframe, width, bpp);
+	guint8* packedInput = m_inputMap.data + offset;
+	if (!isPacked)
+	{
+		m_packedInput.resize(rowBytes * static_cast<gsize>(height));
+		for (int row = 0; row < height; ++row)
+		{
+			std::memcpy(m_packedInput.data() + rowBytes * row, m_inputMap.data + offset + stride * row, rowBytes);
+		}
+		packedInput = m_packedInput.data();
+	}
 
-  int strideIn = GST_VIDEO_FRAME_PLANE_STRIDE(&vframe, 0);
-  int tightRowBytes = width * bpp;
+	m_outputBuffer = gst_buffer_new_allocate(NULL, GST_VIDEO_INFO_SIZE(&info), NULL);
 
-  // Allocate a tightly packed input buffer for IMV_Buffer regardless of source stride
-  m_inputPacked.resize((size_t)tightRowBytes * height);
+	if (m_outputBuffer == nullptr)
+	{
+		reset();
+		return false;
+	}
 
-  const guint8* src = (const guint8*)GST_VIDEO_FRAME_PLANE_DATA(&vframe, 0);
-  if (strideIn == tightRowBytes)
-  {
-    // Already tightly packed - one fast copy
-    memcpy(m_inputPacked.data(), src, (size_t)tightRowBytes * height);
-  }
-  else
-  {
-    // Padded/strided source (common on D3D11 surfaces) - copy row by row
-    for (int row = 0; row < height; row++)
-    {
-      memcpy(m_inputPacked.data() + (size_t)row * tightRowBytes,
-        src + (size_t)row * strideIn,
-        tightRowBytes);
-    }
-  }
+	if (gst_buffer_map(m_outputBuffer, &m_outputMap, (GstMapFlags)(GST_MAP_WRITE)) == FALSE)
+	{
+		gst_buffer_unref(m_outputBuffer);
+		m_outputBuffer = nullptr;
+		reset();
+		return false;
+	}
 
-  gst_video_frame_unmap(&vframe);
+	m_outputBuffer->pts = inputBuffer->pts;
+	m_outputBuffer->dts = inputBuffer->dts;
 
-  // Output buffer: keep it tightly packed too, matching what IMV_Buffer expects
-  m_outputPacked.resize((size_t)tightRowBytes * height);
+	m_in->frameX = 0;
+	m_in->frameY = 0;
+	m_in->width = width;
+	m_in->height = height;
+	m_in->frameWidth = width;
+	m_in->frameHeight = height;
+	m_in->data = packedInput;
 
-  m_outputBuffer = gst_buffer_new_allocate(NULL, (size_t)tightRowBytes * height, NULL);
-  if (m_outputBuffer == nullptr)
-  {
-    return false;
-  }
+	m_out->frameX = 0;
+	m_out->frameY = 0;
+	m_out->width = width;
+	m_out->height = height;
+	m_out->frameWidth = width;
+	m_out->frameHeight = height;
+	m_out->data = m_outputMap.data;
 
-  m_outputBuffer->pts = inputBuffer->pts;
-  m_outputBuffer->dts = inputBuffer->dts;
-
-  m_in->frameX = 0;
-  m_in->frameY = 0;
-  m_in->width = width;
-  m_in->height = height;
-  m_in->frameWidth = width;
-  m_in->frameHeight = height;
-  m_in->data = m_inputPacked.data();       // tightly packed, guaranteed
-
-  m_out->frameX = 0;
-  m_out->frameY = 0;
-  m_out->width = width;
-  m_out->height = height;
-  m_out->frameWidth = width;
-  m_out->frameHeight = height;
-  m_out->data = m_outputPacked.data();     // tightly packed, guaranteed
-
-  return true;
+	return true;
 }
 
 IMV_Buffer* InputOutputBuffers::in()
@@ -225,16 +266,13 @@ int InputOutputBuffers::height()
 
 GstBuffer* InputOutputBuffers::outputTransferFull()
 {
-  GstMapInfo outMap;
-  gst_buffer_map(m_outputBuffer, &outMap, GST_MAP_WRITE);
-  memcpy(outMap.data, m_outputPacked.data(), m_outputPacked.size());
-  gst_buffer_unmap(m_outputBuffer, &outMap);
-
   GstBuffer* outputBuffer = m_outputBuffer;
-  gst_buffer_unref(m_inputBuffer);
-  m_outputBuffer = nullptr;
-  m_inputBuffer = nullptr;
-  return outputBuffer;
+	gst_buffer_unmap(m_outputBuffer, &m_outputMap);
+	gst_buffer_unmap(m_inputBuffer, &m_inputMap);
+	gst_buffer_unref(m_inputBuffer);
+	m_outputBuffer = nullptr;
+	m_inputBuffer = nullptr;
+	return outputBuffer;
 }
 
 DewarpPlugin::DewarpPlugin() : m_mountPos{ 0 }, m_viewType{ 0 }, m_data{ 0 }, m_camera{ new IMV_CameraInterface() },
@@ -340,7 +378,7 @@ bool DewarpPlugin::calibrateLens(std::string format, int width, int height, GstC
 
   if (colorFormat == IMV_Defs::E_RGBA_32_STD)
   {
-    if (!m_buffers.setInputBuffer(originalInputBuffer, caps, format, width, height))
+    if (!m_buffers.setInputBuffer(originalInputBuffer, format, width, height))
       return false;
   }
   else
@@ -360,7 +398,7 @@ bool DewarpPlugin::calibrateLens(std::string format, int width, int height, GstC
       if (toSample == nullptr)
         break;
 
-      ok = m_buffers.setInputBuffer(gst_sample_get_buffer(toSample), caps, format, width, height);
+      ok = m_buffers.setInputBuffer(gst_sample_get_buffer(toSample), kRgbaFormat, width, height);
     } while (0);
 
     if (toSample)
@@ -462,7 +500,7 @@ GstFlowReturn DewarpPlugin::chain(GstPad* pad, GstCaps* inputCaps, GstBuffer* in
 	}
 	else
 	{
-		if (!m_buffers.setInputBuffer(inputBuffer, inputCaps, bufferFormat, width, height))
+		if (!m_buffers.setInputBuffer(inputBuffer, bufferFormat, width, height))
 		{
 			return GST_FLOW_CUSTOM_ERROR_2;
 		}
@@ -642,8 +680,19 @@ gst_vicondewarp_set_property(GObject* object, guint prop_id, const GValue* value
 	case PROP_DEWARP_PROPERTIES:
 	{
 		auto* pointer = gst_value_get_structure(value);
-		thiz->plugin->setProperties(pointer);
-		thiz->properties = pointer ? gst_structure_copy(pointer) : NULL;
+		if (pointer != NULL)
+		{
+			thiz->plugin->setProperties(pointer);
+		}
+		GstStructure* copy = pointer ? gst_structure_copy(pointer) : NULL;
+		GST_OBJECT_LOCK(thiz);
+		GstStructure* previous = thiz->properties;
+		thiz->properties = copy;
+		GST_OBJECT_UNLOCK(thiz);
+		if (previous != NULL)
+		{
+			gst_structure_free(previous);
+		}
 		break;
 	}
 	case PROP_LENSNAME:
@@ -677,7 +726,9 @@ gst_vicondewarp_get_property(GObject* object, guint prop_id,
 		g_value_set_string(value, thiz->plugin->getLensName().c_str());
 		break;
 	case PROP_DEWARP_PROPERTIES:
+		GST_OBJECT_LOCK(thiz);
 		gst_value_set_structure(value, thiz->properties);
+		GST_OBJECT_UNLOCK(thiz);
 		break;
 	default:
 		G_OBJECT_WARN_INVALID_PROPERTY_ID(object, prop_id, pspec);
