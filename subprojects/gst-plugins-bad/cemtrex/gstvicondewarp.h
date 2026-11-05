@@ -7,6 +7,7 @@
 #include <gst/gst.h>
 #include <memory>
 #include <mutex>
+#include <vector>
 #include "IMV1.h"
 
 
@@ -18,7 +19,7 @@ public:
 
 	void reset();
 
-	bool setInputBuffer(GstBuffer* inputBuffer, int width, int height);
+	bool setInputBuffer(GstBuffer* inputBuffer, const std::string& format, int width, int height);
 
 	IMV_Buffer* in();
 	IMV_Buffer* out();
@@ -29,6 +30,10 @@ public:
 	GstBuffer* outputTransferFull();
 
 private:
+	void reportUnsupportedInput(const std::string& format, gsize stride);
+	GstBuffer* acquireOutputBuffer(gsize size);
+	void releaseOutputPool();
+
 	std::unique_ptr<IMV_Buffer> m_in;
 	std::unique_ptr<IMV_Buffer> m_out;
 	GstMapInfo m_inputMap;
@@ -37,6 +42,11 @@ private:
 	GstBuffer* m_inputBuffer;
 	int m_width;
 	int m_height;
+	/* Input repacked when its rows are padded. */
+	std::vector<guint8> m_packedInput;
+	bool m_hasReportedUnsupportedInput;
+	GstBufferPool* m_outputPool;
+	gsize m_outputPoolSize;
 };
 
 class DewarpPlugin
