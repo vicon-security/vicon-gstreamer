@@ -31,6 +31,8 @@ public:
 
 private:
 	void reportUnsupportedInput(const std::string& format, gsize stride);
+	GstBuffer* acquireOutputBuffer(gsize size);
+	void releaseOutputPool();
 
 	std::unique_ptr<IMV_Buffer> m_in;
 	std::unique_ptr<IMV_Buffer> m_out;
@@ -43,6 +45,8 @@ private:
 	/* Input repacked when its rows are padded. */
 	std::vector<guint8> m_packedInput;
 	bool m_hasReportedUnsupportedInput;
+	GstBufferPool* m_outputPool;
+	gsize m_outputPoolSize;
 };
 
 class DewarpPlugin
