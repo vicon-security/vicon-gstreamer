@@ -1,0 +1,363 @@
+diff --git a/subprojects/gst-plugins-bad/cemtrex/gstvicondewarp.cpp b/subprojects/gst-plugins-bad/cemtrex/gstvicondewarp.cpp
+index 3dd4e3de81..313a1a2880 100644
+--- a/subprojects/gst-plugins-bad/cemtrex/gstvicondewarp.cpp
++++ b/subprojects/gst-plugins-bad/cemtrex/gstvicondewarp.cpp
+@@ -3,6 +3,7 @@
+  * support@fluendo.com
+  */
+ #include "config.h"
++#include <cstring>
+ #include <iostream>
+ #include <gst/gst.h>
+ #include <gst/video/video-info.h>
+@@ -12,6 +13,9 @@
+ GST_DEBUG_CATEGORY_STATIC(gst_vicondewarp_debug);
+ #define GST_CAT_DEFAULT gst_vicondewarp_debug
+ 
++static const char* const kRgbaFormat = "RGBA";
++static const char* const kNv12Format = "NV12";
++
+ void saveToPNG(const char* fileName, GstCaps* from_caps, GstBuffer* buf)
+ {
+ 	GstMapInfo map_png;
+@@ -37,9 +41,14 @@ bool getCapsInfo(GstCaps* caps, std::string& bufferFormat, int& width, int& heig
+ 		return false;
+ 	}
+ 
+-	bufferFormat = gst_structure_get_string(capsInfo, "format");
++	const gchar* format = gst_structure_get_string(capsInfo, "format");
++	if (format == nullptr) {
++		return false;
++	}
++
++	bufferFormat = format;
+ 	auto res = gst_structure_get_int(capsInfo, "width", &width);
+-	res |= gst_structure_get_int(capsInfo, "height", &height);
++	res &= gst_structure_get_int(capsInfo, "height", &height);
+ 
+ #ifdef VICON_DEBUG_LIBRARY
+ 	std::string strCaps = gst_caps_to_string(caps);
+@@ -53,12 +62,12 @@ auto string2ColorFormat(const std::string& format)
+ {
+ 	auto colorFormat = IMV_Defs::E_YUV_I420_STD;
+ 
+-	if (format == "RGBA")
++	if (format == kRgbaFormat)
+ 	{
+ 		colorFormat = IMV_Defs::E_RGBA_32_STD;
+ 	}
+ 
+-	if (format == "NV12")
++	if (format == kNv12Format)
+ 	{
+ 		colorFormat = IMV_Defs::E_YUV_NV12_STD;
+ 	}
+@@ -68,13 +77,70 @@ auto string2ColorFormat(const std::string& format)
+ 
+ InputOutputBuffers::InputOutputBuffers() :
+ 	m_in{ new IMV_Buffer() }, m_out{ new IMV_Buffer() }, m_outputBuffer{ nullptr }, m_inputBuffer{ nullptr },
+-	m_width{ 0 }, m_height{ 0 }, m_inputMap{ 0 }, m_outputMap{ 0 }
++	m_width{ 0 }, m_height{ 0 }, m_inputMap{ 0 }, m_outputMap{ 0 }, m_hasReportedUnsupportedInput{ false },
++	m_outputPool{ nullptr }, m_outputPoolSize{ 0 }
+ {
+ }
+ 
+ InputOutputBuffers::~InputOutputBuffers()
+ {
+ 	reset();
++	releaseOutputPool();
++}
++
++static const guint kMaxPooledOutputBuffers = 4;
++
++/* Reused output memory saves IMV ~7.5 ms of page faults per 2976x2976 frame. Never waits: allocates when the pool is
++ * empty. */
++GstBuffer* InputOutputBuffers::acquireOutputBuffer(gsize size)
++{
++	if (m_outputPool != nullptr && m_outputPoolSize != size)
++	{
++		releaseOutputPool();
++	}
++
++	if (m_outputPool == nullptr && size <= G_MAXUINT)
++	{
++		GstBufferPool* pool = gst_buffer_pool_new();
++		GstStructure* config = gst_buffer_pool_get_config(pool);
++		gst_buffer_pool_config_set_params(config, NULL, static_cast<guint>(size), 0, kMaxPooledOutputBuffers);
++		if (gst_buffer_pool_set_config(pool, config) && gst_buffer_pool_set_active(pool, TRUE))
++		{
++			m_outputPool = pool;
++			m_outputPoolSize = size;
++		}
++		else
++		{
++			GST_WARNING("Cannot set up the output buffer pool (%" G_GSIZE_FORMAT " bytes), allocating per frame", size);
++			gst_object_unref(pool);
++		}
++	}
++
++	if (m_outputPool != nullptr)
++	{
++		GstBuffer* buffer = nullptr;
++		GstBufferPoolAcquireParams params = {};
++		params.flags = GST_BUFFER_POOL_ACQUIRE_FLAG_DONTWAIT;
++		if (gst_buffer_pool_acquire_buffer(m_outputPool, &buffer, &params) == GST_FLOW_OK)
++		{
++			return buffer;
++		}
++	}
++
++	return gst_buffer_new_allocate(NULL, size, NULL);
++}
++
++void InputOutputBuffers::releaseOutputPool()
++{
++	if (m_outputPool == nullptr)
++	{
++		return;
++	}
++
++	gst_buffer_pool_set_active(m_outputPool, FALSE);
++	gst_object_unref(m_outputPool);
++	m_outputPool = nullptr;
++	m_outputPoolSize = 0;
+ }
+ 
+ void InputOutputBuffers::reset()
+@@ -94,27 +160,121 @@ void InputOutputBuffers::reset()
+   }
+ }
+ 
+-bool InputOutputBuffers::setInputBuffer(GstBuffer* inputBuffer, int width, int height)
++/* Plane 0 layout from the GstVideoMeta, else the caps' packed layout. IMV has no row pitch, so padded rows (such as a
++ * D3D12 readback) are accepted for RGBA only, to be repacked; a meta that does not match the caps is refused. */
++static bool resolveInputLayout(GstBuffer* buffer, const GstVideoInfo& info, gsize& offset, gsize& stride)
++{
++	offset = GST_VIDEO_INFO_PLANE_OFFSET(&info, 0);
++	stride = GST_VIDEO_INFO_PLANE_STRIDE(&info, 0);
++	GstVideoMeta* meta = gst_buffer_get_video_meta(buffer);
++	if (meta == nullptr)
++	{
++		return true;
++	}
++
++	if (meta->format != GST_VIDEO_INFO_FORMAT(&info) || meta->width < GST_VIDEO_INFO_WIDTH(&info) ||
++		meta->height < GST_VIDEO_INFO_HEIGHT(&info))
++	{
++		return false;
++	}
++
++	bool isDefaultLayout = meta->n_planes == GST_VIDEO_INFO_N_PLANES(&info);
++	for (guint plane = 0; isDefaultLayout && plane < meta->n_planes; ++plane)
++	{
++		isDefaultLayout = meta->offset[plane] == GST_VIDEO_INFO_PLANE_OFFSET(&info, plane) &&
++			meta->stride[plane] == GST_VIDEO_INFO_PLANE_STRIDE(&info, plane);
++	}
++	if (isDefaultLayout)
++	{
++		return true;
++	}
++
++	if (GST_VIDEO_INFO_FORMAT(&info) != GST_VIDEO_FORMAT_RGBA || meta->stride[0] <= 0)
++	{
++		return false;
++	}
++
++	offset = meta->offset[0];
++	stride = static_cast<gsize>(meta->stride[0]);
++	return true;
++}
++
++void InputOutputBuffers::reportUnsupportedInput(const std::string& format, gsize stride)
++{
++	if (m_hasReportedUnsupportedInput)
++	{
++		return;
++	}
++
++	GST_WARNING("Unsupported input %s %dx%d (%" G_GSIZE_FORMAT " bytes, plane 0 stride %" G_GSIZE_FORMAT
++		"), passing frames through undewarped", format.c_str(), m_width, m_height,
++		m_inputBuffer != nullptr ? m_inputMap.size : 0, stride);
++	m_hasReportedUnsupportedInput = true;
++}
++
++bool InputOutputBuffers::setInputBuffer(GstBuffer* inputBuffer, const std::string& format, int width, int height)
+ {
+ 	m_width = width;
+ 	m_height = height;
+   reset();
+-	m_inputBuffer = gst_buffer_ref (inputBuffer);
++
++	GstVideoInfo info;
++	const GstVideoFormat videoFormat = gst_video_format_from_string(format.c_str());
++	if (width <= 0 || height <= 0 || videoFormat == GST_VIDEO_FORMAT_UNKNOWN ||
++		!gst_video_info_set_format(&info, videoFormat, width, height))
++	{
++		reportUnsupportedInput(format, 0);
++		return false;
++	}
+ 
+ 	if (gst_buffer_map(inputBuffer, &m_inputMap, (GstMapFlags)(GST_MAP_READ)) == FALSE)
+ 	{
+ 		return false;
+ 	}
++	m_inputBuffer = gst_buffer_ref(inputBuffer);
++
++	gsize offset = 0;
++	gsize stride = 0;
++	const bool hasSupportedLayout = resolveInputLayout(inputBuffer, info, offset, stride);
++	const gsize rowBytes = static_cast<gsize>(width) * static_cast<gsize>(GST_VIDEO_INFO_COMP_PSTRIDE(&info, 0));
++	const bool isPacked = offset == GST_VIDEO_INFO_PLANE_OFFSET(&info, 0) &&
++		stride == static_cast<gsize>(GST_VIDEO_INFO_PLANE_STRIDE(&info, 0));
++	const gsize mapSize = m_inputMap.size;
++	/* Overflow-safe: the last row must end inside the mapping. */
++	const bool fitsInMap = isPacked ? mapSize >= GST_VIDEO_INFO_SIZE(&info) :
++		stride >= rowBytes && offset <= mapSize && rowBytes <= mapSize - offset &&
++		(mapSize - offset - rowBytes) / stride >= static_cast<gsize>(height - 1);
++	if (!hasSupportedLayout || !fitsInMap)
++	{
++		reportUnsupportedInput(format, stride);
++		reset();
++		return false;
++	}
++	m_hasReportedUnsupportedInput = false;
++
++	guint8* packedInput = m_inputMap.data + offset;
++	if (!isPacked)
++	{
++		m_packedInput.resize(rowBytes * static_cast<gsize>(height));
++		for (int row = 0; row < height; ++row)
++		{
++			std::memcpy(m_packedInput.data() + rowBytes * row, m_inputMap.data + offset + stride * row, rowBytes);
++		}
++		packedInput = m_packedInput.data();
++	}
+ 
+-	m_outputBuffer = gst_buffer_new_allocate(NULL, m_inputMap.size, NULL);
++	m_outputBuffer = acquireOutputBuffer(GST_VIDEO_INFO_SIZE(&info));
+ 
+ 	if (m_outputBuffer == nullptr)
+ 	{
++		reset();
+ 		return false;
+ 	}
+ 
+ 	if (gst_buffer_map(m_outputBuffer, &m_outputMap, (GstMapFlags)(GST_MAP_WRITE)) == FALSE)
+ 	{
++		gst_buffer_unref(m_outputBuffer);
++		m_outputBuffer = nullptr;
+ 		reset();
+ 		return false;
+ 	}
+@@ -128,7 +288,7 @@ bool InputOutputBuffers::setInputBuffer(GstBuffer* inputBuffer, int width, int h
+ 	m_in->height = height;
+ 	m_in->frameWidth = width;
+ 	m_in->frameHeight = height;
+-	m_in->data = m_inputMap.data;
++	m_in->data = packedInput;
+ 
+ 	m_out->frameX = 0;
+ 	m_out->frameY = 0;
+@@ -275,7 +435,7 @@ bool DewarpPlugin::calibrateLens(std::string format, int width, int height, GstC
+ 
+   if (colorFormat == IMV_Defs::E_RGBA_32_STD)
+   {
+-    if (!m_buffers.setInputBuffer(originalInputBuffer, width, height))
++    if (!m_buffers.setInputBuffer(originalInputBuffer, format, width, height))
+       return false;
+   }
+   else
+@@ -295,7 +455,7 @@ bool DewarpPlugin::calibrateLens(std::string format, int width, int height, GstC
+       if (toSample == nullptr)
+         break;
+ 
+-      ok = m_buffers.setInputBuffer(gst_sample_get_buffer(toSample), width, height);
++      ok = m_buffers.setInputBuffer(gst_sample_get_buffer(toSample), kRgbaFormat, width, height);
+     } while (0);
+ 
+     if (toSample)
+@@ -397,7 +557,7 @@ GstFlowReturn DewarpPlugin::chain(GstPad* pad, GstCaps* inputCaps, GstBuffer* in
+ 	}
+ 	else
+ 	{
+-		if (!m_buffers.setInputBuffer(inputBuffer, width, height))
++		if (!m_buffers.setInputBuffer(inputBuffer, bufferFormat, width, height))
+ 		{
+ 			return GST_FLOW_CUSTOM_ERROR_2;
+ 		}
+@@ -577,8 +737,19 @@ gst_vicondewarp_set_property(GObject* object, guint prop_id, const GValue* value
+ 	case PROP_DEWARP_PROPERTIES:
+ 	{
+ 		auto* pointer = gst_value_get_structure(value);
+-		thiz->plugin->setProperties(pointer);
+-		thiz->properties = pointer ? gst_structure_copy(pointer) : NULL;
++		if (pointer != NULL)
++		{
++			thiz->plugin->setProperties(pointer);
++		}
++		GstStructure* copy = pointer ? gst_structure_copy(pointer) : NULL;
++		GST_OBJECT_LOCK(thiz);
++		GstStructure* previous = thiz->properties;
++		thiz->properties = copy;
++		GST_OBJECT_UNLOCK(thiz);
++		if (previous != NULL)
++		{
++			gst_structure_free(previous);
++		}
+ 		break;
+ 	}
+ 	case PROP_LENSNAME:
+@@ -612,7 +783,9 @@ gst_vicondewarp_get_property(GObject* object, guint prop_id,
+ 		g_value_set_string(value, thiz->plugin->getLensName().c_str());
+ 		break;
+ 	case PROP_DEWARP_PROPERTIES:
++		GST_OBJECT_LOCK(thiz);
+ 		gst_value_set_structure(value, thiz->properties);
++		GST_OBJECT_UNLOCK(thiz);
+ 		break;
+ 	default:
+ 		G_OBJECT_WARN_INVALID_PROPERTY_ID(object, prop_id, pspec);
+diff --git a/subprojects/gst-plugins-bad/cemtrex/gstvicondewarp.h b/subprojects/gst-plugins-bad/cemtrex/gstvicondewarp.h
+index d7b7e4f3be..3fd150684c 100644
+--- a/subprojects/gst-plugins-bad/cemtrex/gstvicondewarp.h
++++ b/subprojects/gst-plugins-bad/cemtrex/gstvicondewarp.h
+@@ -7,6 +7,7 @@
+ #include <gst/gst.h>
+ #include <memory>
+ #include <mutex>
++#include <vector>
+ #include "IMV1.h"
+ 
+ 
+@@ -18,7 +19,7 @@ public:
+ 
+ 	void reset();
+ 
+-	bool setInputBuffer(GstBuffer* inputBuffer, int width, int height);
++	bool setInputBuffer(GstBuffer* inputBuffer, const std::string& format, int width, int height);
+ 
+ 	IMV_Buffer* in();
+ 	IMV_Buffer* out();
+@@ -29,6 +30,10 @@ public:
+ 	GstBuffer* outputTransferFull();
+ 
+ private:
++	void reportUnsupportedInput(const std::string& format, gsize stride);
++	GstBuffer* acquireOutputBuffer(gsize size);
++	void releaseOutputPool();
++
+ 	std::unique_ptr<IMV_Buffer> m_in;
+ 	std::unique_ptr<IMV_Buffer> m_out;
+ 	GstMapInfo m_inputMap;
+@@ -37,6 +42,11 @@ private:
+ 	GstBuffer* m_inputBuffer;
+ 	int m_width;
+ 	int m_height;
++	/* Input repacked when its rows are padded. */
++	std::vector<guint8> m_packedInput;
++	bool m_hasReportedUnsupportedInput;
++	GstBufferPool* m_outputPool;
++	gsize m_outputPoolSize;
+ };
+ 
+ class DewarpPlugin
